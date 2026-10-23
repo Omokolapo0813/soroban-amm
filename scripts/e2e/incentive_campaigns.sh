@@ -2,6 +2,11 @@
 # incentive_campaigns.sh - live RPC lifecycle for campaign funding and claims.
 set -Eeuo pipefail
 
+# distribution_count CAMPAIGNS ID - number of distribution records for ID.
+distribution_count() {
+  invoke "$1" get_distribution_count --campaign_id "$2" | parse_i128
+}
+
 run_incentive_campaigns_flow() {
   CURRENT_FLOW="incentive_campaigns"
   local governance="$SOURCE_PUBLIC_KEY"
@@ -76,7 +81,8 @@ run_incentive_campaigns_flow() {
   local payout
   payout=$(invoke "$campaigns" claim_rewards --provider "$governance" --campaign_id "$campaign_id" | parse_i128)
   assert_gt "incentives: first claim pays accrued rewards" "$payout" 0
-  assert_eq "incentives: distribution count" "$(invoke "$campaigns" get_distribution_count --campaign_id "$campaign_id" | parse_i128)" "1"
+  assert_eq_settled "incentives: distribution count" "1" \
+    distribution_count "$campaigns" "$campaign_id"
   assert_contains "incentives: claim history contains campaign" "$(invoke "$campaigns" get_claim_history --provider "$governance" --offset 0 --limit 10)" "$campaign_id"
   assert_contains "incentives: distribution page contains campaign" "$(invoke "$campaigns" list_distribution_records --campaign_id "$campaign_id" --offset 0 --limit 10)" "$campaign_id"
 

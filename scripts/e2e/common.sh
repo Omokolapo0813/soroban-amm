@@ -57,6 +57,29 @@ extract_contract_id() {
   grep -Eo 'C[A-Z0-9]{55}' | tail -n 1
 }
 
+# assert_eq_settled LABEL EXPECTED CMD... — assert_eq for a read of state that
+# a transaction changed moments ago. The node that simulates the read can
+# trail the one that applied the write by a ledger or two, so a stale answer
+# is re-read (up to five more times, 6s apart) before it counts as a failure.
+assert_eq_settled() {
+  local label="$1"
+  local expected="$2"
+  local actual attempt
+  shift 2
+
+  for attempt in 1 2 3 4 5 6; do
+    actual=$("$@") || actual=""
+    if [[ "$actual" == "$expected" ]]; then
+      break
+    fi
+    if [[ "$attempt" -lt 6 ]]; then
+      printf '[retry] %s: read %s, expected %s; waiting in case the RPC node lags\n' "$label" "${actual:-nothing}" "$expected" >&2
+      sleep 6
+    fi
+  done
+  assert_eq "$label" "$actual" "$expected"
+}
+
 assert_eq() {
   local label="$1"
   local actual="$2"
@@ -417,14 +440,21 @@ e2e_new_seeded_pool() {
   local tx="$2"
   local ty="$3"
   local amount="$4"
-  local out pool deadline
+  local out pool deadline attempt
 
   out=$(invoke "$factory" create_pool_with_fee_bps \
     --caller "$SOURCE_PUBLIC_KEY" \
     --token_a "$tx" \
     --token_b "$ty" \
     --fee_bps 30 2>&1) || die "create_pool_with_fee_bps failed: $out"
-  pool=$(invoke "$factory" get_pool --token_a "$tx" --token_b "$ty" | extract_contract_id)
+  # The pool was created a moment ago; the node answering this read can
+  # still be a ledger behind and report no pool, so poll before giving up.
+  for attempt in 1 2 3 4 5 6; do
+    pool=$(invoke "$factory" get_pool --token_a "$tx" --token_b "$ty" | extract_contract_id || true)
+    [[ -n "$pool" ]] && break
+    printf '[retry] get_pool found no pool yet; waiting in case the RPC node lags\n' >&2
+    sleep 6
+  done
   if [[ -z "$pool" ]]; then
     die "factory has no pool for the pair after create_pool_with_fee_bps: $out"
   fi

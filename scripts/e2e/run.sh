@@ -25,7 +25,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/e2e/common.sh"
 
 SHARED_FLOWS=(v2 factory cl governance staking twap)
-SELF_CONTAINED_FLOWS=(token router dex_aggregator oracle_aggregator cl_position_nft pol_vesting twap_consumer twal_consumer)
+SELF_CONTAINED_FLOWS=(token router dex_aggregator oracle_aggregator cl_position_nft pol_vesting twap_consumer twal_consumer incentive_campaigns)
 ALL_FLOWS=("${SHARED_FLOWS[@]}" "${SELF_CONTAINED_FLOWS[@]}")
 
 ONLY_RAW=""
