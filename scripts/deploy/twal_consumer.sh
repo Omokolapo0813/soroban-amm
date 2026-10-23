@@ -78,7 +78,9 @@ verify_twal_consumer_keeper() {
   local expected_keeper="$2"
   local keeper
   keeper=$(invoke_read "$contract_id" get_keeper || true)
-  if printf '%s\n' "$keeper" | grep -Fqx -- "$expected_keeper"; then
+  # The CLI prints an address return value as a JSON string ("G..."), so drop
+  # the quotes before the whole-line compare.
+  if printf '%s\n' "$keeper" | tr -d '"' | grep -Fqx -- "$expected_keeper"; then
     log "verified twal_consumer keeper=$expected_keeper"
     return 0
   fi

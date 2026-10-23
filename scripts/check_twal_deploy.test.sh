@@ -30,6 +30,10 @@ export NETWORK=testnet SOURCE_ACCOUNT=stub
   printf '%s\n' 'GEXPECTED' > "$STUB_DIR/get_keeper.out"
   verify_twal_consumer_keeper CTWAL GEXPECTED
 
+  # stellar prints address results as JSON strings.
+  printf '%s\n' '"GEXPECTED"' > "$STUB_DIR/get_keeper.out"
+  verify_twal_consumer_keeper CTWAL GEXPECTED
+
   printf '%s\n' 'GEXPECTED-extra' > "$STUB_DIR/get_keeper.out"
   if (verify_twal_consumer_keeper CTWAL GEXPECTED) > "$scratch/mismatch.out" 2>&1; then
     echo 'FAIL: keeper substring mismatch was accepted' >&2
