@@ -1,0 +1,4 @@
+{
+  "$comment": "Exceptions to the headroom check in `cargo run -p benches -- --check`. A bench may use at most 60% of the 100M-instruction per-transaction limit (override with --headroom-pct) unless it is listed here. Every entry needs a `reason` (at least 20 characters), an `issue` URL for the work that removes the exception, and `max_limit_pct` (1-100), the most it may use before the check fails again. Nothing is allowlisted today.",
+  "allow": []
+}

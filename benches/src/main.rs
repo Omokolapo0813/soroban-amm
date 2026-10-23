@@ -1,7 +1,15 @@
 use std::{env as std_env, fs, process};
 
+mod report;
+
+use report::{
+    check_headroom, check_regressions, check_stale_baseline, parse_allowlist, parse_baseline,
+    render_json, render_summary, Metric, DEFAULT_HEADROOM_PCT,
+};
+
 use amm::{AmmPool, AmmPoolClient};
 use batch_auction::{BatchAuction, BatchAuctionClient};
+use batch_router::{BatchOp, BatchRouter, BatchRouterClient, PoolType as BatchPoolType, SwapOp};
 use concentrated_liquidity::{ConcentratedLiquidity, ConcentratedLiquidityClient};
 use dex_aggregator::{DexAggregator, DexAggregatorClient};
 use factory::{Factory, FactoryClient};
@@ -16,9 +24,11 @@ use soroban_sdk::{
 };
 use staking::{Staking, StakingClient};
 use token::{LpToken, LpTokenClient};
+use twal_consumer::{PoolType as TwalPoolType, TwalConsumer, TwalConsumerClient};
+use twap_consumer::{TwapConsumer, TwapConsumerClient};
 
-const REGRESSION_BPS: u128 = 500;
 const BASELINE_PATH: &str = "benches/baseline.json";
+const ALLOWLIST_PATH: &str = "benches/allowlist.json";
 
 /// Where the optimized pool WASM is looked for after `BENCH_WASM_DIR`: the directory CI
 /// writes it to, then the one `scripts/optimize_contracts.sh` writes it to.
@@ -54,13 +64,6 @@ fn pool_wasm(name: &str, embedded: &'static [u8]) -> Vec<u8> {
         Some(path) => fs::read(&path).unwrap_or_else(|err| panic!("read {path}: {err}")),
         None => embedded.to_vec(),
     }
-}
-
-#[derive(Clone)]
-struct Metric {
-    name: String,
-    cpu_instructions: u64,
-    mem_bytes: u64,
 }
 
 #[contracttype]
@@ -172,14 +175,66 @@ fn main() {
         return;
     }
 
-    println!("{json}");
+    let baseline = fs::read_to_string(BASELINE_PATH)
+        .map_err(|err| format!("read {BASELINE_PATH}: {err}"))
+        .and_then(|text| parse_baseline(&text));
+    let table = render_summary(&metrics, baseline.as_ref().unwrap_or(&Default::default()));
+
+    if args.iter().any(|arg| arg == "--summary") {
+        // Markdown for `$GITHUB_STEP_SUMMARY`; the JSON stays on stderr-free stdout otherwise.
+        print!("{table}");
+    } else {
+        println!("{json}");
+    }
 
     if args.iter().any(|arg| arg == "--check") {
-        let baseline = fs::read_to_string(BASELINE_PATH).expect("read benches/baseline.json");
-        if let Err(message) = check_regressions(&metrics, &baseline) {
+        if let Ok(path) = std_env::var("GITHUB_STEP_SUMMARY") {
+            if let Err(err) = append_summary(&path, &table) {
+                eprintln!("benches: could not write the step summary: {err}");
+            }
+        }
+        if let Err(message) = run_checks(&metrics, baseline, &args) {
             eprintln!("{message}");
             process::exit(1);
         }
+    }
+}
+
+/// Appends to the file `$GITHUB_STEP_SUMMARY` points at (other steps write to it too).
+fn append_summary(path: &str, table: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "### Hot-path benchmarks\n")?;
+    file.write_all(table.as_bytes())
+}
+
+fn run_checks(
+    metrics: &[Metric],
+    baseline: Result<report::Baseline, String>,
+    args: &[String],
+) -> Result<(), String> {
+    let baseline = baseline?;
+    let allowlist = match fs::read_to_string(ALLOWLIST_PATH) {
+        Ok(text) => parse_allowlist(&text)?,
+        Err(err) => return Err(format!("read {ALLOWLIST_PATH}: {err}")),
+    };
+    let headroom = headroom_pct(args)?;
+    check_regressions(metrics, &baseline)?;
+    check_stale_baseline(metrics, &baseline)?;
+    check_headroom(metrics, headroom, &allowlist)
+}
+
+/// `--headroom-pct N` overrides the default share of the instruction limit.
+fn headroom_pct(args: &[String]) -> Result<u64, String> {
+    match args.iter().position(|arg| arg == "--headroom-pct") {
+        None => Ok(DEFAULT_HEADROOM_PCT),
+        Some(i) => args
+            .get(i + 1)
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| "--headroom-pct needs a whole number of percent".to_string()),
     }
 }
 
@@ -240,6 +295,33 @@ fn run_all() -> Vec<Metric> {
         ));
     }
     metrics.push(measure("factory.create_pool", bench_factory_create_pool));
+
+    // Hot paths whose cost grows with stored state, at the small and the
+    // large end of what the contract allows.
+    for ops in BATCH_OPS {
+        metrics.push(measure(
+            format!("batch_router.execute_batch.ops_{ops}"),
+            move |env| bench_batch_router_execute(env, ops),
+        ));
+    }
+    for pools in TRACKED_POOLS {
+        metrics.push(measure(
+            format!("twap_consumer.get_twap_all.pools_{pools}"),
+            move |env| bench_twap_get_all(env, pools),
+        ));
+    }
+    for pools in TRACKED_POOLS {
+        metrics.push(measure(
+            format!("twal_consumer.get_twal_all.pools_{pools}"),
+            move |env| bench_twal_get_all(env, pools),
+        ));
+    }
+    for stakers in STAKER_COUNTS {
+        metrics.push(measure(
+            format!("staking.stake.stakers_{stakers}"),
+            move |env| bench_staking_stake_scaled(env, stakers),
+        ));
+    }
     metrics
 }
 
@@ -247,6 +329,16 @@ fn run_all() -> Vec<Metric> {
 const HOP_COUNTS: [u32; 3] = [1, 2, 3];
 /// Number of initialized ticks crossed for the tick-walk-dependent CL paths.
 const TICK_CROSSINGS: [i32; 3] = [1, 4, 8];
+/// Swaps in one `batch_router.execute_batch`. Each swap runs the pool's WASM at
+/// roughly 10.6M instructions, so about nine fit in one transaction: the
+/// contract's ceiling of 200 operations is far past what the network allows.
+/// The sizes stay under the headroom threshold; extrapolate the slope.
+const BATCH_OPS: [u32; 2] = [2, 4];
+/// Tracked pools read by `twap_consumer.get_twap_all` / `twal_consumer.get_twal_all`
+/// (the consumers cap the set at 100).
+const TRACKED_POOLS: [u32; 2] = [10, 100];
+/// Stakers already registered when one more stakes.
+const STAKER_COUNTS: [u32; 2] = [50, 400];
 
 fn measure(name: impl Into<String>, f: impl FnOnce(&Env)) -> Metric {
     let name = name.into();
@@ -807,60 +899,92 @@ fn parse_budget(text: &str) -> (u64, u64) {
     (cpu, mem)
 }
 
-fn render_json(metrics: &[Metric]) -> String {
-    let mut out = String::from("{\n  \"metrics\": [\n");
-    for (idx, metric) in metrics.iter().enumerate() {
-        let comma = if idx + 1 == metrics.len() { "" } else { "," };
-        out.push_str(&format!(
-            "    {{ \"name\": \"{}\", \"cpu_instructions\": {}, \"mem_bytes\": {} }}{}\n",
-            metric.name, metric.cpu_instructions, metric.mem_bytes, comma
-        ));
+// ── Scaling benches (#1167) ───────────────────────────────────────────────────
+
+fn bench_staking_stake_scaled(env: &Env, stakers: u32) {
+    let (staking, staker, admin) = setup_staking(env);
+    let lp = staking.get_pool_info().lp_token;
+    let _ = admin;
+    for _ in 0..stakers {
+        let other = Address::generate(env);
+        LpTokenClient::new(env, &lp).mint(&other, &1_000);
+        staking.stake(&other, &1_000);
     }
-    out.push_str("  ]\n}\n");
-    out
+    env.budget().reset_default();
+    staking.stake(&staker, &500_000);
 }
 
-fn check_regressions(metrics: &[Metric], baseline: &str) -> Result<(), String> {
-    for metric in metrics {
-        let cpu = read_baseline_value(baseline, &metric.name, "cpu_instructions")
-            .ok_or_else(|| format!("missing baseline CPU metric for {}", metric.name))?;
-        let mem = read_baseline_value(baseline, &metric.name, "mem_bytes")
-            .ok_or_else(|| format!("missing baseline memory metric for {}", metric.name))?;
-        assert_within(
-            &metric.name,
-            "cpu_instructions",
-            metric.cpu_instructions,
-            cpu,
-        )?;
-        assert_within(&metric.name, "mem_bytes", metric.mem_bytes, mem)?;
+/// A CL-pool stand-in for the TWAP/TWAL consumers: cheap, deterministic, and
+/// identical for every tracked pool, so the bench measures the consumer.
+#[contract]
+struct BenchClPool;
+
+#[contractimpl]
+impl BenchClPool {
+    pub fn get_tick_cumulative(env: Env) -> (i64, u64) {
+        let now = env.ledger().timestamp();
+        (100 * now as i64, now)
     }
-    Ok(())
+
+    pub fn observe(env: Env, _seconds_ago: u64) -> i64 {
+        100 * env.ledger().timestamp() as i64
+    }
+
+    pub fn active_liquidity(_env: Env) -> i128 {
+        1_000_000
+    }
 }
 
-fn assert_within(name: &str, key: &str, current: u64, baseline: u64) -> Result<(), String> {
-    let allowed = (baseline as u128) * (10_000 + REGRESSION_BPS) / 10_000;
-    if (current as u128) > allowed {
-        return Err(format!(
-            "{name} {key} regressed: current {current}, baseline {baseline}, allowed {allowed}\n\
-             \n\
-             If this increase is expected (e.g. a storage/TTL change to a hot-path\n\
-             contract), regenerate the baseline and commit it in THIS pull request:\n\
-             \x20   cargo run -p benches -- --write-baseline\n\
-             Otherwise, your change made {name} slower than intended — investigate before merging."
-        ));
+fn bench_twap_get_all(env: &Env, pools: u32) {
+    env.ledger().set_timestamp(10_000);
+    let keeper = Address::generate(env);
+    let consumer = TwapConsumerClient::new(env, &env.register_contract(None, TwapConsumer));
+    consumer.initialize(&keeper);
+    for _ in 0..pools {
+        consumer.save_cl_snapshot(&env.register_contract(None, BenchClPool));
     }
-    Ok(())
+    env.ledger().set_timestamp(10_060);
+    env.budget().reset_default();
+    let all = consumer.get_twap_all(&60);
+    assert_eq!(all.len(), pools, "every tracked pool must be read");
 }
 
-fn read_baseline_value(text: &str, name: &str, key: &str) -> Option<u64> {
-    let name_pos = text.find(&format!("\"name\": \"{name}\""))?;
-    let after_name = &text[name_pos..];
-    let key_pos = after_name.find(&format!("\"{key}\":"))?;
-    let after_key = &after_name[key_pos + key.len() + 3..];
-    let digits: String = after_key
-        .chars()
-        .skip_while(|c| c.is_whitespace())
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+fn bench_twal_get_all(env: &Env, pools: u32) {
+    env.ledger().set_timestamp(10_000);
+    let keeper = Address::generate(env);
+    let consumer = TwalConsumerClient::new(env, &env.register_contract(None, TwalConsumer));
+    consumer.initialize(&keeper);
+    for _ in 0..pools {
+        let pool = env.register_contract(None, BenchClPool);
+        consumer.add_tracked_pool(&pool, &TwalPoolType::Cl);
+        consumer.save_cl_snapshot(&pool);
+    }
+    env.ledger().set_timestamp(10_060);
+    env.budget().reset_default();
+    let all = consumer.get_twal_all(&60);
+    assert_eq!(all.len(), pools, "every tracked pool must be read");
+}
+
+fn bench_batch_router_execute(env: &Env, ops: u32) {
+    let chain = setup_pool_chain(env, 1);
+    let router = BatchRouterClient::new(env, &env.register_contract(None, BatchRouter));
+    router.initialize(&chain.admin, &chain.factory.address);
+    let token_in = chain.tokens.get(0).unwrap();
+    let token_out = chain.tokens.get(1).unwrap();
+    let pool = chain.factory.get_pool(&token_in, &token_out).unwrap();
+    let mut batch = SorobanVec::new(env);
+    for _ in 0..ops {
+        batch.push_back(BatchOp::Swap(SwapOp {
+            pool: pool.clone(),
+            token_in: token_in.clone(),
+            amount_in: 100,
+            min_out: 0,
+            pool_kind: BatchPoolType::Amm,
+            zero_for_one: false,
+            sqrt_price_limit_x96: 0,
+        }));
+    }
+    env.budget().reset_default();
+    let results = router.execute_batch(&chain.trader, &batch, &u64::MAX);
+    assert_eq!(results.len(), ops);
 }

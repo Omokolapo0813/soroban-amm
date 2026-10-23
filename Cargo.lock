@@ -193,6 +193,7 @@ version = "0.1.0"
 dependencies = [
  "amm",
  "batch_auction",
+ "batch_router",
  "cl_position_nft",
  "concentrated_liquidity",
  "dex_aggregator",
@@ -205,6 +206,8 @@ dependencies = [
  "soroban-sdk",
  "staking",
  "token",
+ "twal_consumer",
+ "twap_consumer",
 ]
 
 [[package]]

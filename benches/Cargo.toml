@@ -16,7 +16,8 @@ cl_position_nft = { path = "../contracts/cl_position_nft", features = ["testutil
 factory = { path = "../contracts/factory", features = ["testutils"] }
 router = { path = "../contracts/router", features = ["testutils"] }
 dex_aggregator = { path = "../contracts/dex_aggregator", features = ["testutils"] }
-
-[dev-dependencies]
+batch_router = { path = "../contracts/batch_router" }
+twap_consumer = { path = "../contracts/twap_consumer", features = ["testutils"] }
+twal_consumer = { path = "../contracts/twal_consumer" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
