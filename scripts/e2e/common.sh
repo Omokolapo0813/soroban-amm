@@ -231,7 +231,9 @@ invoke_as() {
     if [[ "$rc" -eq 0 || "$attempt" -eq 2 ]]; then
       break
     fi
-    if [[ "${E2E_SIM_RETRY:-1}" == "1" ]] && grep -q 'transaction simulation failed' "$err"; then
+    if [[ "${E2E_SIM_RETRY:-1}" == "1" ]] && grep -qE 'transaction simulation failed|Contract not found' "$err"; then
+      # "Contract not found" is the same lag one step earlier: the node that
+      # simulates has not indexed the instance deployed a moment ago.
       printf '[retry] %s simulation failed; waiting a ledger in case the RPC node lags, then retrying\n' "$1" >&2
       sleep 6
     elif [[ "${E2E_SIM_RETRY:-1}" == "1" ]] && grep -q 'ResourceLimitExceeded' "$err"; then
@@ -242,6 +244,12 @@ invoke_as() {
       # Rejected before submission, so repeating it cannot apply twice.
       printf '[retry] %s: RPC node has not seen the account yet; waiting, then retrying\n' "$1" >&2
       sleep 10
+    elif grep -q 'TxBadSeq' "$err"; then
+      # The node handed out a sequence number a ledger behind the one that
+      # confirmed our previous transaction. The rejected transaction was not
+      # applied, and the retry fetches the sequence again.
+      printf '[retry] %s: stale account sequence (TxBadSeq); waiting a ledger, then retrying\n' "$1" >&2
+      sleep 6
     else
       break
     fi
@@ -303,7 +311,8 @@ e2e_wasm() {
 }
 
 # e2e_retry LABEL CMD... — run CMD and print its output. A transient RPC
-# failure (an account the node has not seen yet, a timeout, or a 429/5xx) is
+# failure (an account the node has not seen yet, a stale sequence number, a
+# timeout, or a 429/5xx) is
 # retried up to six times with a growing wait. Only use it for calls that are
 # safe to repeat: uploads, and deploys of fresh instances.
 e2e_retry() {
@@ -319,7 +328,7 @@ e2e_retry() {
     fi
     # A here-string rather than a pipe: under pipefail, grep -q exiting early
     # can make the printf on the left look like a failure.
-    if [[ "$attempt" -eq "$max_attempts" ]] || ! grep -qE 'Account not found|Request timeout|timed out|SendRequest|client error|rejected `?(429|50[0-9])|\b(429|50[234])\b' <<<"$out"; then
+    if [[ "$attempt" -eq "$max_attempts" ]] || ! grep -qE 'Account not found|TxBadSeq|Request timeout|timed out|SendRequest|client error|rejected `?(429|50[0-9])|\b(429|50[234])\b' <<<"$out"; then
       printf '%s\n' "$out"
       return "$rc"
     fi

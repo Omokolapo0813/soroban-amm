@@ -87,8 +87,10 @@ run_cl_position_nft_flow() {
   expect_fail "cl_position_nft: owner_of a burned token fails" \
     invoke "$nft" owner_of --token_id "$id1"
   assert_eq "cl_position_nft: balance_of owner after burn" "$(invoke "$nft" balance_of --owner "$owner" | parse_i128)" "0"
-  assert_eq "cl_position_nft: total_supply is cumulative (unchanged by burn)" \
-    "$(invoke "$nft" total_supply | parse_i128)" "2"
+  assert_eq "cl_position_nft: total_supply drops by one after a burn" \
+    "$(invoke "$nft" total_supply | parse_i128)" "1"
+  assert_eq "cl_position_nft: total_minted is cumulative (unchanged by burn)" \
+    "$(invoke "$nft" total_minted | parse_i128)" "2"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
