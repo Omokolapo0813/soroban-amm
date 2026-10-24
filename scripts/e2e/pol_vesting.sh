@@ -13,6 +13,11 @@
 #   bash scripts/e2e/pol_vesting.sh
 set -Eeuo pipefail
 
+# schedule_released VEST BENEFICIARY ID - the `released` field of a schedule.
+schedule_released() {
+  invoke "$1" get_vesting --beneficiary "$2" --schedule_id "$3" | json_num released
+}
+
 run_pol_vesting_flow() {
   CURRENT_FLOW="pol_vesting"
 
@@ -48,7 +53,7 @@ run_pol_vesting_flow() {
 
   # ── fund the vesting contract (create_vesting expects tokens in place) ──
   invoke "$lp" transfer --from "$governance" --to "$vest" --amount "$total" >/dev/null
-  assert_eq "pol_vesting: contract holds the vesting total" "$(balance_of "$lp" "$vest")" "$total"
+  assert_eq_settled "pol_vesting: contract holds the vesting total" "$total" balance_of "$lp" "$vest"
 
   # ── create_vesting ──────────────────────────────────────────────────────
   expect_fail "pol_vesting: schedule with end <= cliff is rejected" \
@@ -92,36 +97,43 @@ run_pol_vesting_flow() {
     die "pol_vesting: release paid out $released, expected strictly less than total $total"
   fi
   pass "pol_vesting: release is partial ($released < $total)"
-  assert_eq "pol_vesting: beneficiary credited by release" "$(balance_of "$lp" "$beneficiary")" "$(( bal0 + released ))"
-  assert_eq "pol_vesting: schedule records the release" \
-    "$(invoke "$vest" get_vesting --beneficiary "$beneficiary" --schedule_id "$schedule_id" | json_num released)" "$released"
+  assert_eq_settled "pol_vesting: beneficiary credited by release" "$(( bal0 + released ))" balance_of "$lp" "$beneficiary"
+  assert_eq_settled "pol_vesting: schedule records the release" "$released" \
+    schedule_released "$vest" "$beneficiary" "$schedule_id"
 
   # ── revoke_vesting: remaining tokens split, total conserved ─────────────
-  local bal1 treasury0 to_beneficiary to_treasury
-  bal1=$(balance_of "$lp" "$beneficiary")
+  # Baselines come from checks that already settled, not from a fresh read
+  # taken right after a write. Only the treasury read follows a state change
+  # (the revoke), so it is polled until the remainder shows up.
+  local bal1 treasury0 to_beneficiary to_treasury attempt
+  bal1=$(( bal0 + released ))
   treasury0=$(balance_of "$lp" "$treasury")
   invoke "$vest" revoke_vesting \
     --governance "$governance" --beneficiary "$beneficiary" --schedule_id "$schedule_id" >/dev/null
+  for attempt in 1 2 3 4 5 6; do
+    to_treasury=$(( $(balance_of "$lp" "$treasury") - treasury0 ))
+    (( to_treasury > 0 )) && break
+    printf '[retry] pol_vesting: treasury balance has not moved yet; waiting in case the RPC node lags\n' >&2
+    sleep 6
+  done
   to_beneficiary=$(( $(balance_of "$lp" "$beneficiary") - bal1 ))
-  to_treasury=$(( $(balance_of "$lp" "$treasury") - treasury0 ))
   assert_eq "pol_vesting: revoke does not pay beneficiary directly" "$to_beneficiary" "0"
   assert_gt "pol_vesting: treasury receives the unvested remainder" "$to_treasury" 0
 
-  local revoked_schedule
-  revoked_schedule=$(invoke "$vest" get_vesting --beneficiary "$beneficiary" --schedule_id "$schedule_id")
-  assert_contains "pol_vesting: schedule is marked revoked" "$revoked_schedule" "true"
+  assert_contains_settled "pol_vesting: schedule is marked revoked" "true" \
+    invoke "$vest" get_vesting --beneficiary "$beneficiary" --schedule_id "$schedule_id"
 
   # ── release after revoke: beneficiary claims frozen remainder ───────────
   local claimable bal2 remainder_released
   claimable=$(invoke "$vest" releasable_amount --beneficiary "$beneficiary" --schedule_id "$schedule_id" | parse_i128)
   assert_gt "pol_vesting: claimable remainder after revoke is positive" "$claimable" 0
-  bal2=$(balance_of "$lp" "$beneficiary")
+  bal2=$bal1  # revoke paid the beneficiary nothing (asserted above)
   remainder_released=$(invoke "$vest" release --beneficiary "$beneficiary" --schedule_id "$schedule_id" | parse_i128)
   assert_eq "pol_vesting: release pays out frozen remainder" "$remainder_released" "$claimable"
-  assert_eq "pol_vesting: beneficiary credited by remainder release" "$(balance_of "$lp" "$beneficiary")" "$(( bal2 + remainder_released ))"
+  assert_eq_settled "pol_vesting: beneficiary credited by remainder release" "$(( bal2 + remainder_released ))" balance_of "$lp" "$beneficiary"
   assert_eq "pol_vesting: released + remainder + unvested equals total" \
     "$(( released + remainder_released + to_treasury ))" "$total"
-  assert_eq "pol_vesting: contract is emptied after remainder release" "$(balance_of "$lp" "$vest")" "0"
+  assert_eq_settled "pol_vesting: contract is emptied after remainder release" "0" balance_of "$lp" "$vest"
   expect_fail "pol_vesting: second release has nothing to release" \
     invoke "$vest" release --beneficiary "$beneficiary" --schedule_id "$schedule_id"
 }

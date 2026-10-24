@@ -207,6 +207,27 @@ assert_contains() {
   fi
 }
 
+# assert_contains_settled LABEL NEEDLE CMD... — assert_contains for output that
+# depends on a transaction applied moments ago; see assert_eq_settled.
+assert_contains_settled() {
+  local label="$1"
+  local needle="$2"
+  local actual attempt
+  shift 2
+
+  for attempt in 1 2 3 4 5 6; do
+    actual=$("$@") || actual=""
+    if [[ "$actual" == *"$needle"* ]]; then
+      break
+    fi
+    if [[ "$attempt" -lt 6 ]]; then
+      printf '[retry] %s: output lacks %s; waiting in case the RPC node lags\n' "$label" "$needle" >&2
+      sleep 6
+    fi
+  done
+  assert_contains "$label" "$actual" "$needle"
+}
+
 assert_not_contains() {
   local label="$1"
   local haystack="$2"
