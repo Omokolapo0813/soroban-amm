@@ -50,7 +50,7 @@ run_twal_consumer_flow() {
 
   # ── initialize ──────────────────────────────────────────────────────────
   invoke "$twal" initialize --keeper "$keeper" >/dev/null
-  assert_eq "twal_consumer: keeper reads back" "$(invoke "$twal" get_keeper | parse_address)" "$keeper"
+  assert_eq "twal_consumer: keeper reads back" '@cmd:invoke "$twal" get_keeper | parse_address' "$keeper"
   expect_fail "twal_consumer: second initialize is rejected" \
     invoke "$twal" initialize --keeper "$outsider"
 
@@ -58,11 +58,11 @@ run_twal_consumer_flow() {
   expect_fail "twal_consumer: non-keeper cannot save a snapshot" \
     invoke_as "$outsider_key" "$twal" save_snapshot --pool "$pool"
   invoke "$twal" save_snapshot --pool "$pool" >/dev/null
-  assert_eq "twal_consumer: first snapshot recorded" "$(invoke "$twal" get_snapshot_count --pool "$pool" | parse_i128)" "1"
-  assert_eq "twal_consumer: pool is tracked after save" "$(invoke "$twal" is_tracked --pool "$pool" | twal_bool)" "true"
-  assert_eq "twal_consumer: one tracked pool" "$(invoke "$twal" get_tracked_pool_count | parse_i128)" "1"
+  assert_eq "twal_consumer: first snapshot recorded" '@cmd:invoke "$twal" get_snapshot_count --pool "$pool" | parse_i128' "1"
+  assert_eq "twal_consumer: pool is tracked after save" '@cmd:invoke "$twal" is_tracked --pool "$pool" | twal_bool' "true"
+  assert_eq "twal_consumer: one tracked pool" '@cmd:invoke "$twal" get_tracked_pool_count | parse_i128' "1"
   assert_contains "twal_consumer: paginated list includes the pool" \
-    "$(invoke "$twal" get_tracked_pools_paginated --offset 0 --limit 10)" "$pool"
+    '@cmd:invoke "$twal" get_tracked_pools_paginated --offset 0 --limit 10' "$pool"
 
   local first_ts
   first_ts=$(invoke "$pool" get_liquidity_cumulative | grep -Eo '[0-9]+' | tail -n 1)
@@ -77,17 +77,21 @@ run_twal_consumer_flow() {
     --provider "$keeper" --amount_a 500000000 --amount_b 500000000 \
     --min_shares 0 --deadline "$(( $(date +%s) + 600 ))" | parse_i128)
   assert_gt "twal_consumer: add_liquidity mints shares" "$shares" 0
-  high=$(invoke "$pool" get_info | grep -Eo '"total_shares":"?[0-9]+' | grep -Eo '[0-9]+' | tail -n 1)
+  # Wait for the deposit to show in total_shares, or the upper bound is stale.
+  high=$(e2e_read_until "twal_consumer: total_shares after the deposit" \
+    'invoke "$pool" get_info | grep -Eo '\''"total_shares":"?[0-9]+'\'' | grep -Eo '\''[0-9]+'\'' | tail -n 1' \
+    _is_gt "$low")
   local second_ts
   second_ts=$(( first_ts + 60 ))
   e2e_wait_for_timestamp "$pool" "$second_ts"
   invoke "$twal" save_snapshot --pool "$pool" >/dev/null
-  assert_eq "twal_consumer: second snapshot recorded" "$(invoke "$twal" get_snapshot_count --pool "$pool" | parse_i128)" "2"
+  assert_eq "twal_consumer: second snapshot recorded" '@cmd:invoke "$twal" get_snapshot_count --pool "$pool" | parse_i128' "2"
 
   # ── TWAL reads: the average lies between the liquidity bounds ───────────
   local window avg
   window=30
-  avg=$(invoke "$twal" get_twal_liquidity --pool "$pool" --window_seconds "$window" | parse_i128)
+  avg=$(e2e_read_until "twal_consumer: get_twal_liquidity" \
+    'invoke "$twal" get_twal_liquidity --pool "$pool" --window_seconds "$window" | parse_i128' _is_gt 0)
   assert_gt "twal_consumer: TWAL over a 60s window is positive" "$avg" 0
   # The window covers time before and after the deposit, so the average lies
   # between the liquidity before it and the liquidity after it.
@@ -106,13 +110,12 @@ run_twal_consumer_flow() {
     invoke "$twal" get_twal_liquidity --pool "$stranger" --window_seconds 60
 
   # ── batch readers: one entry per pool, a bad address does not abort ─────
-  local batch
-  batch=$(invoke "$twal" get_twal_all_safe --window_seconds "$window")
-  assert_contains "twal_consumer: batch read returns the tracked pool" "$batch" "$pool"
+  assert_contains "twal_consumer: batch read returns the tracked pool" \
+    '@cmd:invoke "$twal" get_twal_all_safe --window_seconds "$window"' "$pool"
 
   # ── untrack and delete ──────────────────────────────────────────────────
   invoke "$twal" remove_tracked_pool --pool "$pool" >/dev/null
-  assert_eq "twal_consumer: pool is no longer tracked" "$(invoke "$twal" is_tracked --pool "$pool" | twal_bool)" "false"
+  assert_eq "twal_consumer: pool is no longer tracked" '@cmd:invoke "$twal" is_tracked --pool "$pool" | twal_bool' "false"
   expect_fail "twal_consumer: removing an untracked pool is rejected (NotTracked)" \
     invoke "$twal" remove_tracked_pool --pool "$pool"
 }

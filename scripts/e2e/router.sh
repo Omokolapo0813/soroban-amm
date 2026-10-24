@@ -34,17 +34,17 @@ run_router_flow() {
   local router
   router=$(e2e_deploy router)
   invoke "$router" initialize --admin "$trader" --factory "$factory" >/dev/null
-  assert_eq "router: get_factory reads back" "$(invoke "$router" get_factory | parse_address)" "$factory"
-  assert_eq "router: starts unpaused" "$(invoke "$router" is_paused)" "false"
+  assert_eq "router: get_factory reads back" '@cmd:invoke "$router" get_factory | parse_address' "$factory"
+  assert_eq "router: starts unpaused" '@cmd:invoke "$router" is_paused' "false"
 
   expect_fail "router: second initialize is rejected" \
     invoke "$router" initialize --admin "$trader" --factory "$factory"
 
   # ── path discovery ──────────────────────────────────────────────────────
   local path="[\"$ta\",\"$tb\",\"$tc\"]"
-  assert_eq "router: A -> B -> C is routable" "$(invoke "$router" is_path_routable --path "$path")" "true"
+  assert_eq "router: A -> B -> C is routable" '@cmd:invoke "$router" is_path_routable --path "$path"' "true"
   assert_eq "router: direct A -> C (no pool) is not routable" \
-    "$(invoke "$router" is_path_routable --path "[\"$ta\",\"$tc\"]")" "false"
+    '@cmd:invoke "$router" is_path_routable --path "[\"$ta\",\"$tc\"]"' "false"
 
   local pools_out
   pools_out=$(invoke "$router" get_pools_for_path --path "$path")
@@ -61,9 +61,9 @@ run_router_flow() {
   assert_eq "router: exact-in quote equals chained pool quotes" "$quote" "$hop1"
 
   amounts_out=$(invoke "$router" get_amounts_out_path --path "$path" --amount_in "$amount_in")
-  assert_eq "router: per-hop breakdown starts at amount_in" "$(printf '%s\n' "$amounts_out" | nth_num 1)" "$amount_in"
-  assert_eq "router: per-hop breakdown intermediate amount" "$(printf '%s\n' "$amounts_out" | nth_num 2)" "$hop0"
-  assert_eq "router: per-hop breakdown ends at the quote" "$(printf '%s\n' "$amounts_out" | nth_num 3)" "$quote"
+  assert_eq "router: per-hop breakdown starts at amount_in" '@cmd:printf '\''%s\n'\'' "$amounts_out" | nth_num 1' "$amount_in"
+  assert_eq "router: per-hop breakdown intermediate amount" '@cmd:printf '\''%s\n'\'' "$amounts_out" | nth_num 2' "$hop0"
+  assert_eq "router: per-hop breakdown ends at the quote" '@cmd:printf '\''%s\n'\'' "$amounts_out" | nth_num 3' "$quote"
 
   # ── swap_exact_in ───────────────────────────────────────────────────────
   # Balances read straight after a write can come from a node a ledger behind
@@ -126,14 +126,14 @@ run_router_flow() {
 
   # ── pause switch ────────────────────────────────────────────────────────
   invoke "$router" pause --admin "$trader" >/dev/null
-  assert_eq "router: is_paused after pause" "$(invoke "$router" is_paused)" "true"
+  assert_eq "router: is_paused after pause" '@cmd:invoke "$router" is_paused' "true"
   deadline=$(( $(date +%s) + 300 ))
   expect_fail "router: swaps are rejected while paused" \
     invoke "$router" swap_exact_in \
       --trader "$trader" --path "$path" --amount_in "$amount_in" \
       --min_amount_out 0 --deadline "$deadline"
   invoke "$router" unpause --admin "$trader" >/dev/null
-  assert_eq "router: is_paused after unpause" "$(invoke "$router" is_paused)" "false"
+  assert_eq "router: is_paused after unpause" '@cmd:invoke "$router" is_paused' "false"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

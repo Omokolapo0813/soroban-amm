@@ -31,9 +31,9 @@ run_cl_position_nft_flow() {
   local nft
   nft=$(e2e_deploy cl_position_nft)
   invoke "$nft" initialize --admin "$admin" --cl_pool "$pool" >/dev/null
-  assert_eq "cl_position_nft: admin reads back" "$(invoke "$nft" admin | parse_address)" "$admin"
-  assert_eq "cl_position_nft: cl_pool reads back" "$(invoke "$nft" cl_pool | parse_address)" "$pool"
-  assert_eq "cl_position_nft: next_token_id starts at 0" "$(invoke "$nft" next_token_id | parse_i128)" "0"
+  assert_eq "cl_position_nft: admin reads back" '@cmd:invoke "$nft" admin | parse_address' "$admin"
+  assert_eq "cl_position_nft: cl_pool reads back" '@cmd:invoke "$nft" cl_pool | parse_address' "$pool"
+  assert_eq "cl_position_nft: next_token_id starts at 0" '@cmd:invoke "$nft" next_token_id | parse_i128' "0"
   expect_fail "cl_position_nft: second initialize is rejected" \
     invoke "$nft" initialize --admin "$buyer" --cl_pool "$buyer"
 
@@ -48,34 +48,30 @@ run_cl_position_nft_flow() {
     --to "$owner" --pool "$pool" --lower_tick="$(( lower * 2 ))" --upper_tick="$(( upper * 2 ))" | parse_i128)
   assert_eq "cl_position_nft: first token id" "$id0" "0"
   assert_eq "cl_position_nft: ids are sequential" "$id1" "1"
-  assert_eq "cl_position_nft: next_token_id after two mints" "$(invoke "$nft" next_token_id | parse_i128)" "2"
-  assert_eq "cl_position_nft: total_supply after two mints" "$(invoke "$nft" total_supply | parse_i128)" "2"
+  assert_eq "cl_position_nft: next_token_id after two mints" '@cmd:invoke "$nft" next_token_id | parse_i128' "2"
+  assert_eq "cl_position_nft: total_supply after two mints" '@cmd:invoke "$nft" total_supply | parse_i128' "2"
 
   # ── ownership + metadata reads ──────────────────────────────────────────
-  assert_eq "cl_position_nft: owner_of token 0" "$(invoke "$nft" owner_of --token_id "$id0" | parse_address)" "$owner"
-  local meta
-  meta=$(invoke "$nft" position_meta --token_id "$id0")
-  assert_eq "cl_position_nft: position_meta lower_tick" "$(printf '%s\n' "$meta" | json_num lower_tick)" "$lower"
-  assert_eq "cl_position_nft: position_meta upper_tick" "$(printf '%s\n' "$meta" | json_num upper_tick)" "$upper"
-  assert_contains "cl_position_nft: position_meta records the pool" "$meta" "$pool"
-  assert_eq "cl_position_nft: balance_of owner" "$(invoke "$nft" balance_of --owner "$owner" | parse_i128)" "2"
-  local owned
-  owned=$(invoke "$nft" tokens_of --owner "$owner")
-  assert_eq "cl_position_nft: tokens_of lists two ids" "$(printf '%s\n' "$owned" | count_matches '[0-9]+')" "2"
+  assert_eq "cl_position_nft: owner_of token 0" '@cmd:invoke "$nft" owner_of --token_id "$id0" | parse_address' "$owner"
+  assert_eq "cl_position_nft: position_meta lower_tick" '@cmd:invoke "$nft" position_meta --token_id "$id0" | json_num lower_tick' "$lower"
+  assert_eq "cl_position_nft: position_meta upper_tick" '@cmd:invoke "$nft" position_meta --token_id "$id0" | json_num upper_tick' "$upper"
+  assert_contains "cl_position_nft: position_meta records the pool" '@cmd:invoke "$nft" position_meta --token_id "$id0"' "$pool"
+  assert_eq "cl_position_nft: balance_of owner" '@cmd:invoke "$nft" balance_of --owner "$owner" | parse_i128' "2"
+  assert_eq "cl_position_nft: tokens_of lists two ids" '@cmd:invoke "$nft" tokens_of --owner "$owner" | count_matches '\''[0-9]+'\''' "2"
 
   # ── approve + approved transfer ─────────────────────────────────────────
   invoke "$nft" approve --caller "$owner" --approved "$buyer" --token_id "$id0" >/dev/null
   assert_eq "cl_position_nft: get_approved reads back" \
-    "$(invoke "$nft" get_approved --token_id "$id0" | parse_address)" "$buyer"
+    '@cmd:invoke "$nft" get_approved --token_id "$id0" | parse_address' "$buyer"
 
   invoke_as "$buyer_key" "$nft" transfer \
     --caller "$buyer" --from "$owner" --to "$buyer" --token_id "$id0" >/dev/null
   assert_eq "cl_position_nft: approved transfer moves ownership" \
-    "$(invoke "$nft" owner_of --token_id "$id0" | parse_address)" "$buyer"
+    '@cmd:invoke "$nft" owner_of --token_id "$id0" | parse_address' "$buyer"
   assert_not_contains "cl_position_nft: approval cleared on transfer" \
-    "$(invoke "$nft" get_approved --token_id "$id0")" "$buyer"
-  assert_eq "cl_position_nft: balance_of seller after transfer" "$(invoke "$nft" balance_of --owner "$owner" | parse_i128)" "1"
-  assert_eq "cl_position_nft: balance_of buyer after transfer" "$(invoke "$nft" balance_of --owner "$buyer" | parse_i128)" "1"
+    '@cmd:invoke "$nft" get_approved --token_id "$id0"' "$buyer"
+  assert_eq "cl_position_nft: balance_of seller after transfer" '@cmd:invoke "$nft" balance_of --owner "$owner" | parse_i128' "1"
+  assert_eq "cl_position_nft: balance_of buyer after transfer" '@cmd:invoke "$nft" balance_of --owner "$buyer" | parse_i128' "1"
 
   expect_fail "cl_position_nft: transfer by a non-owner, non-approved caller is rejected" \
     invoke "$nft" transfer --caller "$owner" --from "$buyer" --to "$owner" --token_id "$id0"
@@ -86,11 +82,11 @@ run_cl_position_nft_flow() {
   invoke_as "$pool_key" "$nft" burn --token_id "$id1" >/dev/null
   expect_fail "cl_position_nft: owner_of a burned token fails" \
     invoke "$nft" owner_of --token_id "$id1"
-  assert_eq "cl_position_nft: balance_of owner after burn" "$(invoke "$nft" balance_of --owner "$owner" | parse_i128)" "0"
+  assert_eq "cl_position_nft: balance_of owner after burn" '@cmd:invoke "$nft" balance_of --owner "$owner" | parse_i128' "0"
   assert_eq "cl_position_nft: total_supply drops by one after a burn" \
-    "$(invoke "$nft" total_supply | parse_i128)" "1"
+    '@cmd:invoke "$nft" total_supply | parse_i128' "1"
   assert_eq "cl_position_nft: total_minted is cumulative (unchanged by burn)" \
-    "$(invoke "$nft" total_minted | parse_i128)" "2"
+    '@cmd:invoke "$nft" total_minted | parse_i128' "2"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

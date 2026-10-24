@@ -22,11 +22,12 @@ run_incentive_campaigns_flow() {
   reward=$(e2e_new_token ICR)
   factory=$(e2e_new_factory)
   pool=$(e2e_new_seeded_pool "$factory" "$token_a" "$token_b" 10000000)
-  lp=$(invoke "$factory" get_lp_token --pool "$pool" | parse_address)
+  lp=$(e2e_read_until "incentives: get_lp_token" \
+    'invoke "$factory" get_lp_token --pool "$pool" | parse_address' _nonempty)
   campaigns=$(e2e_deploy incentive_campaigns)
 
   invoke "$campaigns" initialize --governance "$governance" >/dev/null
-  assert_eq "incentives: governance reads back" "$(invoke "$campaigns" get_governance | parse_address)" "$governance"
+  assert_eq "incentives: governance reads back" '@cmd:invoke "$campaigns" get_governance | parse_address' "$governance"
   expect_fail "incentives: second initialize is rejected" invoke "$campaigns" initialize --governance "$governance"
 
   local start end rate funding
@@ -59,10 +60,10 @@ run_incentive_campaigns_flow() {
     --caller "$governance" --pool "$pool" --lp_token "$lp" --reward_token "$reward" \
     --start_time "$start" --end_time "$end" --reward_rate "$rate" --funding_amount "$funding" | parse_i128)
   assert_eq "incentives: first campaign id" "$campaign_id" "1"
-  assert_eq "incentives: campaign count" "$(invoke "$campaigns" get_campaign_count | parse_i128)" "1"
-  assert_contains "incentives: campaign appears in page" "$(invoke "$campaigns" list_campaigns_paginated --offset 0 --limit 10)" "$campaign_id"
-  assert_eq "incentives: escrow holds exact funding" "$(balance_of "$reward" "$campaigns")" "$funding"
-  assert_eq "incentives: campaign uses the default claim grace" "$(invoke "$campaigns" get_claim_grace --campaign_id "$campaign_id" | parse_i128)" "604800"
+  assert_eq "incentives: campaign count" '@cmd:invoke "$campaigns" get_campaign_count | parse_i128' "1"
+  assert_contains "incentives: campaign appears in page" '@cmd:invoke "$campaigns" list_campaigns_paginated --offset 0 --limit 10' "$campaign_id"
+  assert_eq "incentives: escrow holds exact funding" '@cmd:balance_of "$reward" "$campaigns"' "$funding"
+  assert_eq "incentives: campaign uses the default claim grace" '@cmd:invoke "$campaigns" get_claim_grace --campaign_id "$campaign_id" | parse_i128' "604800"
 
   # New campaigns pay stakers only, so the provider stakes LP shares first.
   # Staking before start_time is allowed; rewards begin flowing at start_time.
@@ -71,11 +72,11 @@ run_incentive_campaigns_flow() {
   stake_amount=$(( lp_balance / 2 ))
   assert_gt "incentives: provider holds LP shares to stake" "$stake_amount" 0
   invoke "$campaigns" stake --provider "$governance" --campaign_id "$campaign_id" --amount "$stake_amount" >/dev/null
-  assert_eq "incentives: stake reads back" "$(invoke "$campaigns" get_stake --campaign_id "$campaign_id" --provider "$governance" | parse_i128)" "$stake_amount"
-  assert_eq "incentives: staked LP is held by the contract" "$(balance_of "$lp" "$campaigns")" "$stake_amount"
+  assert_eq "incentives: stake reads back" '@cmd:invoke "$campaigns" get_stake --campaign_id "$campaign_id" --provider "$governance" | parse_i128' "$stake_amount"
+  assert_eq "incentives: staked LP is held by the contract" '@cmd:balance_of "$lp" "$campaigns"' "$stake_amount"
 
   e2e_wait_until $(( start + 14 ))
-  assert_eq "incentives: campaign is active inside its window" "$(invoke "$campaigns" is_campaign_active --campaign_id "$campaign_id")" "true"
+  assert_eq "incentives: campaign is active inside its window" '@cmd:invoke "$campaigns" is_campaign_active --campaign_id "$campaign_id"' "true"
   expect_fail "incentives: claim without a stake is rejected" \
     invoke_as "$outsider_key" "$campaigns" claim_rewards --provider "$outsider" --campaign_id "$campaign_id"
   local payout
@@ -83,22 +84,23 @@ run_incentive_campaigns_flow() {
   assert_gt "incentives: first claim pays accrued rewards" "$payout" 0
   assert_eq_settled "incentives: distribution count" "1" \
     distribution_count "$campaigns" "$campaign_id"
-  assert_contains "incentives: claim history contains campaign" "$(invoke "$campaigns" get_claim_history --provider "$governance" --offset 0 --limit 10)" "$campaign_id"
-  assert_contains "incentives: distribution page contains campaign" "$(invoke "$campaigns" list_distribution_records --campaign_id "$campaign_id" --offset 0 --limit 10)" "$campaign_id"
+  assert_contains "incentives: claim history contains campaign" '@cmd:invoke "$campaigns" get_claim_history --provider "$governance" --offset 0 --limit 10' "$campaign_id"
+  assert_contains "incentives: distribution page contains campaign" '@cmd:invoke "$campaigns" list_distribution_records --campaign_id "$campaign_id" --offset 0 --limit 10' "$campaign_id"
 
   local accrued_before
   accrued_before=$(invoke "$campaigns" get_campaign_accrual --campaign_id "$campaign_id" | nth_num 1)
   invoke "$campaigns" set_campaign_rate --caller "$governance" --campaign_id "$campaign_id" --new_rate 5000 >/dev/null
-  assert_eq "incentives: updated rate reads back" "$(invoke "$campaigns" get_campaign --campaign_id "$campaign_id" | json_num reward_rate)" "5000"
-  assert_between "incentives: old-rate accrual is checkpointed" "$(invoke "$campaigns" get_campaign_accrual --campaign_id "$campaign_id" | nth_num 1)" "$accrued_before" "$funding"
+  assert_eq "incentives: updated rate reads back" '@cmd:invoke "$campaigns" get_campaign --campaign_id "$campaign_id" | json_num reward_rate' "5000"
+  assert_between "incentives: old-rate accrual is checkpointed" '@cmd:invoke "$campaigns" get_campaign_accrual --campaign_id "$campaign_id" | nth_num 1' "$accrued_before" "$funding"
 
   e2e_wait_until $(( end + 6 ))
-  local final_payout distributed
+  local final_payout
   final_payout=$(invoke "$campaigns" claim_rewards --provider "$governance" --campaign_id "$campaign_id" | parse_i128)
   assert_gt "incentives: claim after the campaign ends pays the remainder" "$final_payout" 0
-  distributed=$(invoke "$campaigns" get_campaign --campaign_id "$campaign_id" | json_num total_distributed)
-  assert_eq "incentives: total distributed equals the claims" "$distributed" "$(( payout + final_payout ))"
-  assert_between "incentives: distributed stays within the funding" "$distributed" 1 "$funding"
+  assert_eq "incentives: total distributed equals the claims" \
+    '@cmd:invoke "$campaigns" get_campaign --campaign_id "$campaign_id" | json_num total_distributed' "$(( payout + final_payout ))"
+  assert_between "incentives: distributed stays within the funding" \
+    '@cmd:invoke "$campaigns" get_campaign --campaign_id "$campaign_id" | json_num total_distributed' 1 "$funding"
 
   # Leftover recovery is blocked until end_time + claim_grace_secs (at least an
   # hour), which a live-network run cannot wait for; the positive path is covered
@@ -107,12 +109,12 @@ run_incentive_campaigns_flow() {
     invoke "$campaigns" recover_leftover_funds --caller "$governance" --campaign_id "$campaign_id" --recipient "$governance"
 
   invoke "$campaigns" unstake --provider "$governance" --campaign_id "$campaign_id" --amount "$stake_amount" >/dev/null
-  assert_eq "incentives: unstake clears the position" "$(invoke "$campaigns" get_stake --campaign_id "$campaign_id" --provider "$governance" | parse_i128)" "0"
-  assert_eq "incentives: unstake returns the LP shares" "$(balance_of "$lp" "$governance")" "$lp_balance"
+  assert_eq "incentives: unstake clears the position" '@cmd:invoke "$campaigns" get_stake --campaign_id "$campaign_id" --provider "$governance" | parse_i128' "0"
+  assert_eq "incentives: unstake returns the LP shares" '@cmd:balance_of "$lp" "$governance"' "$lp_balance"
 
   invoke "$campaigns" propose_governance --caller "$governance" --new_governance "$successor" >/dev/null
   invoke_as "$successor_key" "$campaigns" accept_governance --new_governance "$successor" >/dev/null
-  assert_eq "incentives: governance handover reads back" "$(invoke "$campaigns" get_governance | parse_address)" "$successor"
+  assert_eq "incentives: governance handover reads back" '@cmd:invoke "$campaigns" get_governance | parse_address' "$successor"
   expect_fail "incentives: former governance loses create authority" invoke "$campaigns" create_campaign \
     --caller "$governance" --pool "$pool" --lp_token "$lp" --reward_token "$reward" \
     --start_time "$start" --end_time "$end" --reward_rate "$rate" --funding_amount "$funding"

@@ -44,12 +44,10 @@ run_cl_flow() {
     --min_b 0)
   pass "cl: mint_position succeeded: $mint_output"
 
-  local position_output liquidity
-  position_output=$(invoke "$pool" get_position \
-    --provider "$provider" \
-    --lower_tick "$lower_tick" \
-    --upper_tick "$upper_tick")
-  liquidity=$(printf '%s\n' "$position_output" | field_value liquidity)
+  local liquidity
+  liquidity=$(e2e_read_until "cl: get_position liquidity" \
+    'invoke "$pool" get_position --provider "$provider" --lower_tick "$lower_tick" --upper_tick "$upper_tick" | field_value liquidity' \
+    _is_gt 0)
   assert_gt "cl: get_position reflects nonzero liquidity" "$liquidity" 0
 
   # ── swap ─────────────────────────────────────────────────────────────────
@@ -72,7 +70,8 @@ run_cl_flow() {
   assert_gt "cl: swap returns positive output" "$swap_out" 0
 
   local tick_after
-  tick_after=$(invoke "$pool" current_tick | parse_i128)
+  tick_after=$(e2e_read_until "cl: current_tick after the swap" \
+    'invoke "$pool" current_tick | parse_i128' _is_ne "$tick_before")
   if [[ "$tick_after" == "$tick_before" ]]; then
     die "cl: current_tick did not move after swap (before=$tick_before, after=$tick_after)"
   fi
@@ -107,20 +106,24 @@ run_cl_flow() {
     --liquidity "$liquidity")
   pass "cl: burn_position succeeded: $burn_output"
 
-  local bal_a_after bal_b_after
-  bal_a_after=$(invoke "$TOKEN_A_CONTRACT_ID" balance --id "$provider" | parse_i128)
-  bal_b_after=$(invoke "$TOKEN_B_CONTRACT_ID" balance --id "$provider" | parse_i128)
+  # The burn's payout can trail by a ledger on the node that answers the read.
+  local bal_a_after bal_b_after attempt
+  for (( attempt = 1; attempt <= E2E_READ_ATTEMPTS; attempt++ )); do
+    bal_a_after=$(invoke "$TOKEN_A_CONTRACT_ID" balance --id "$provider" | parse_i128)
+    bal_b_after=$(invoke "$TOKEN_B_CONTRACT_ID" balance --id "$provider" | parse_i128)
+    if (( bal_a_after > bal_a_before || bal_b_after > bal_b_before )); then
+      break
+    fi
+    if (( attempt < E2E_READ_ATTEMPTS )); then
+      printf '[retry] cl: burn_position payout not visible yet; waiting in case the RPC node lags\n' >&2
+      sleep "$E2E_READ_WAIT_SECS"
+    fi
+  done
   if (( bal_a_after <= bal_a_before && bal_b_after <= bal_b_before )); then
     die "cl: burn_position did not return any tokens (a: $bal_a_before -> $bal_a_after, b: $bal_b_before -> $bal_b_after)"
   fi
   pass "cl: burn_position returned tokens to provider (a: $bal_a_before -> $bal_a_after, b: $bal_b_before -> $bal_b_after)"
 
-  local closed_position
-  closed_position=$(invoke "$pool" get_position \
-    --provider "$provider" \
-    --lower_tick "$lower_tick" \
-    --upper_tick "$upper_tick" 2>&1)
-  local closed_liquidity
-  closed_liquidity=$(printf '%s\n' "$closed_position" | field_value liquidity || echo "0")
-  assert_eq "cl: position liquidity is zero after full burn" "${closed_liquidity:-0}" "0"
+  assert_eq "cl: position liquidity is zero after full burn" \
+    '@cmd:{ invoke "$pool" get_position --provider "$provider" --lower_tick "$lower_tick" --upper_tick "$upper_tick" 2>&1 || true; } | field_value liquidity || echo 0' "0"
 }

@@ -33,25 +33,25 @@ run_twap_consumer_flow() {
   local twap
   twap=$(e2e_deploy twap_consumer)
   invoke "$twap" initialize --keeper "$keeper" >/dev/null
-  assert_eq "twap_consumer: keeper reads back" "$(invoke "$twap" get_keeper | parse_address)" "$keeper"
+  assert_eq "twap_consumer: keeper reads back" '@cmd:invoke "$twap" get_keeper | parse_address' "$keeper"
   expect_fail "twap_consumer: second initialize is rejected" \
     invoke "$twap" initialize --keeper "$keeper"
   assert_eq "twap_consumer: default retention max_age_seconds" \
-    "$(invoke "$twap" get_retention_policy | json_num max_age_seconds)" "604800"
+    '@cmd:invoke "$twap" get_retention_policy | json_num max_age_seconds' "604800"
 
   # ── save_snapshot (keeper-only) ─────────────────────────────────────────
   assert_eq "twap_consumer: no snapshots before the first save" \
-    "$(invoke "$twap" get_snapshot_count --pool "$pool" | parse_i128)" "0"
+    '@cmd:invoke "$twap" get_snapshot_count --pool "$pool" | parse_i128' "0"
   expect_fail "twap_consumer: save_snapshot without keeper auth is rejected" \
     invoke_signed_only_by "$outsider_key" "$twap" save_snapshot --pool "$pool"
 
   invoke "$twap" save_snapshot --pool "$pool" >/dev/null
   assert_eq "twap_consumer: snapshot count after save" \
-    "$(invoke "$twap" get_snapshot_count --pool "$pool" | parse_i128)" "1"
+    '@cmd:invoke "$twap" get_snapshot_count --pool "$pool" | parse_i128' "1"
   assert_eq "twap_consumer: one snapshot timestamp indexed" \
-    "$(invoke "$twap" list_snapshot_timestamps --pool "$pool" --offset 0 --limit 10 | count_matches '[0-9]+')" "1"
+    '@cmd:invoke "$twap" list_snapshot_timestamps --pool "$pool" --offset 0 --limit 10 | count_matches '\''[0-9]+'\''' "1"
   assert_contains "twap_consumer: pool is tracked after its first snapshot" \
-    "$(invoke "$twap" get_tracked_pools)" "$pool"
+    '@cmd:invoke "$twap" get_tracked_pools' "$pool"
 
   # ── swap so the pool's cumulative price advances past the snapshot ──────
   # Wait out the window first so the snapshot is at or before now - window
@@ -70,14 +70,16 @@ run_twap_consumer_flow() {
 
   # ── TWAP read ───────────────────────────────────────────────────────────
   local twap_price
-  twap_price=$(invoke "$twap" get_twap_price --pool "$pool" --window_seconds "$window" | parse_i128)
+  twap_price=$(e2e_read_until "twap_consumer: get_twap_price" \
+    'invoke "$twap" get_twap_price --pool "$pool" --window_seconds "$window" | parse_i128' _is_gt 0)
   assert_gt "twap_consumer: TWAP over the snapshot window is positive" "$twap_price" 0
   local adapter adapter_price
   adapter=$(e2e_deploy oracle_adapters)
   invoke "$adapter" initialize \
     --admin "$keeper" --factory "$factory" --consumer "$twap" --mode Amm \
     --window_seconds "$window" --max_age_seconds 120 --fee_tiers '[]' >/dev/null
-  adapter_price=$(invoke "$adapter" quote --token_a "$ta" --token_b "$tb" | nth_num 1)
+  adapter_price=$(e2e_read_until "oracle adapter: quote" \
+    'invoke "$adapter" quote --token_a "$ta" --token_b "$tb" | nth_num 1' _is_gt 0)
   assert_gt "oracle adapter: AMM TWAP source returns a positive quote" "$adapter_price" 0
   expect_fail "twap_consumer: zero-length window is rejected" \
     invoke "$twap" get_twap_price --pool "$pool" --window_seconds 0

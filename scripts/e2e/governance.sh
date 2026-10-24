@@ -60,7 +60,8 @@ run_governance_flow() {
   if [[ -z "$pool_addr" ]]; then
     die "governance: failed to create isolated AMM pool"
   fi
-  lp_token=$(invoke "$FACTORY_CONTRACT_ID" get_lp_token --pool "$pool_addr" | extract_contract_id)
+  lp_token=$(e2e_read_until "governance: get_lp_token" \
+    'invoke "$FACTORY_CONTRACT_ID" get_lp_token --pool "$pool_addr" | extract_contract_id' _nonempty)
   if [[ -z "$lp_token" ]]; then
     die "governance: could not resolve LP token for isolated pool"
   fi
@@ -105,9 +106,8 @@ run_governance_flow() {
   # The isolated pool's admin is the factory admin (this account), so it can
   # have the pool delegate the locker directly.
   invoke "$pool_addr" set_lp_locker --locker "$governance" >/dev/null
-  local locker
-  locker=$(invoke "$lp_token" locker | extract_contract_id)
-  assert_eq "governance: LP token locker is the governance instance" "$locker" "$governance"
+  assert_eq "governance: LP token locker is the governance instance" \
+    '@cmd:invoke "$lp_token" locker | extract_contract_id' "$governance"
 
   # ── propose ──────────────────────────────────────────────────────────────
   local proposal_id
@@ -120,20 +120,18 @@ run_governance_flow() {
   pass "governance: created proposal $proposal_id (UpdateFee -> 25 bps)"
 
   local status
-  status=$(invoke "$governance" proposal_status --proposal_id "$proposal_id")
-  if [[ "$status" != *"Active"* ]]; then
-    die "governance: proposal status expected Active, got: $status"
-  fi
-  pass "governance: proposal status is Active"
+  assert_contains "governance: proposal status is Active" \
+    '@cmd:invoke "$governance" proposal_status --proposal_id "$proposal_id"' "Active"
 
   # ── vote ─────────────────────────────────────────────────────────────────
   invoke "$governance" vote --voter "$admin" --proposal_id "$proposal_id" --choice '{"For":[]}' >/dev/null
   pass "governance: voted For on proposal $proposal_id"
 
-  local locked lp_balance
-  locked=$(invoke "$lp_token" locked_balance --id "$admin" | parse_i128)
+  # Locking does not move the balance, so it is safe to read up front.
+  local lp_balance
   lp_balance=$(invoke "$lp_token" balance --id "$admin" | parse_i128)
-  assert_eq "governance: voter's LP balance is locked by the vote" "$locked" "$lp_balance"
+  assert_eq "governance: voter's LP balance is locked by the vote" \
+    '@cmd:invoke "$lp_token" locked_balance --id "$admin" | parse_i128' "$lp_balance"
 
   # ── advance past voting period ───────────────────────────────────────────
   # Wait on the proposal's own vote_end rather than voting_period, since part
@@ -177,21 +175,17 @@ run_governance_flow() {
   invoke "$governance" execute --proposal_id "$proposal_id" >/dev/null
   pass "governance: executed proposal $proposal_id"
 
-  status=$(invoke "$governance" proposal_status --proposal_id "$proposal_id")
-  if [[ "$status" != *"Executed"* ]]; then
-    die "governance: proposal status expected Executed, got: $status"
-  fi
-  pass "governance: proposal status is Executed"
+  assert_contains "governance: proposal status is Executed" \
+    '@cmd:invoke "$governance" proposal_status --proposal_id "$proposal_id"' "Executed"
 
-  local new_fee_bps
-  new_fee_bps=$(invoke "$pool_addr" get_info | field_value fee_bps)
-  assert_eq "governance: pool fee_bps updated by executed proposal" "$new_fee_bps" "25"
+  assert_eq "governance: pool fee_bps updated by executed proposal" \
+    '@cmd:invoke "$pool_addr" get_info | field_value fee_bps' "25"
 
   # unlock_vote releases the LP tokens through LpToken::unlock, authorised by
   # governance as the locker that locked them.
   invoke "$governance" unlock_vote --voter "$admin" --proposal_id "$proposal_id" >/dev/null
-  locked=$(invoke "$lp_token" locked_balance --id "$admin" | parse_i128)
-  assert_eq "governance: LP balance unlocked after execution" "$locked" "0"
+  assert_eq "governance: LP balance unlocked after execution" \
+    '@cmd:invoke "$lp_token" locked_balance --id "$admin" | parse_i128' "0"
 }
 
 # A throwaway token for the isolated governance pool, independent of the
