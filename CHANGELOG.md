@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Fixed
+- `amm::remove_liquidity` no longer checks the pause flag, so a paused pool (admin pause or a circuit breaker trip) cannot trap LP funds (#1172). `remove_liquidity_one_sided` stays blocked while paused: it swaps against the reserves, so leaving it open would let trading continue through a pause. Swaps, deposits and flash loans are unchanged. The new `exits_allowed_when_paused()` view returns `true` to confirm that `remove_liquidity` stays open for integrators and UIs.
 - `pol_vesting::create_vesting` rejects an LP token that the given `pool` does not administer, with the new `VestingError::LpTokenMismatch = 13`. A mistyped pair used to create a schedule for a token the pool never issued (#1136).
 - `pol_vesting` schedules outlive the default 180-day bump. A schedule is stored with a TTL covering its `end_ledger` plus a claim window, clamped to the network maximum. Reads of a schedule refresh it and its token's committed total, and the instance is refreshed to the network maximum (#1136).
 - `pol_vesting` gains a governance-gated `upgrade(governance, new_wasm_hash)` that emits `upgraded`, and `initialize` emits an `initialized` event with the stored governance and treasury addresses. The deploy module reads both back and aborts on a mismatch (#1136).

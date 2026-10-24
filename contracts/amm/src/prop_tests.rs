@@ -520,6 +520,7 @@ fn test_remove_liquidity_succeeds_when_paused() {
     let (out_a, out_b) = RemoveLiquidity::new(&amm, &provider, shares).execute();
     assert!(out_a > 0 && out_b > 0);
 }
+
 #[test]
 fn test_protocol_fee_accrual() {
     let (env, admin, amm_addr, lp_addr, _) = setup();

@@ -9,9 +9,10 @@
 //!
 //! # Pausing policy
 //! When paused (via `pause` or circuit breaker trip), swaps, deposits
-//! (`add_liquidity`, `add_liquidity_fot`), and `flash_loan` are blocked.
-//! Liquidity withdrawals (`remove_liquidity` and `remove_liquidity_one_sided`)
-//! remain open so LP funds are never trapped.
+//! (`add_liquidity`, `add_liquidity_fot`), `flash_loan` and
+//! `remove_liquidity_one_sided` (which swaps against the reserves) are
+//! blocked. `remove_liquidity` stays open: it pays out pro rata with no price
+//! impact, so LP funds are never trapped.
 
 #![no_std]
 
@@ -657,6 +658,19 @@ impl AmmPool {
             (lp_token, locker)
         );
         Ok(())
+    }
+
+    /// Whether LPs can still redeem through `remove_liquidity` while the pool
+    /// is paused. Always `true`: the pro-rata exit has no pause guard, so
+    /// integrators, routers and UIs can use this to confirm that funds are
+    /// never trapped by a pause or circuit breaker trip.
+    ///
+    /// Only `remove_liquidity` is covered. `remove_liquidity_one_sided` swaps
+    /// against the reserves and is blocked while paused, and a pool drained by
+    /// an emergency withdrawal rejects every exit (see `is_drained`).
+    pub fn exits_allowed_when_paused(env: Env) -> bool {
+        Self::extend_ttl(&env);
+        true
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -2190,6 +2204,7 @@ impl AmmPool {
     /// - If `provider` owns fewer shares than `shares`.
     /// - If `token_out` is not one of the two pool tokens.
     /// - If the computed output would be less than `min_out`.
+    /// - If the pool is paused (use `remove_liquidity` to exit pro rata).
     #[allow(clippy::too_many_arguments)]
     pub fn remove_liquidity_one_sided(
         env: Env,
@@ -2206,7 +2221,12 @@ impl AmmPool {
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
-        // No pause guard -- LPs must always be able to exit.
+        // Unlike `remove_liquidity`, this entrypoint swaps against the pool's own
+        // reserves, so the pause (and a circuit breaker trip) must stop it. An LP
+        // can still exit pro rata through `remove_liquidity`.
+        if Self::is_paused(env.clone()) {
+            return Err(AmmError::Paused);
+        }
         // Acquire the reentrancy lock for the duration of this call; a
         // reentrant call arriving via a token/receiver callback is rejected
         // here with `Reentrant`, and the lock is released automatically

@@ -2011,11 +2011,10 @@ fn test_remove_liquidity_one_sided_circuit_breaker() {
         "triggered_at must match trip timestamp"
     );
 
-    // Subsequent exit call does not fail with Paused (exits remain allowed while paused),
-    // though if it would trip the circuit breaker again, circuit breaker returns Ok(0).
+    // Subsequent call must fail with Paused.
     let res =
         amm.try_remove_liquidity_one_sided(&provider, &shares, &ts.ta_addr, &1_i128, &u64::MAX);
-    assert_ne!(res, Err(Ok(AmmError::Paused)));
+    assert_eq!(res, Err(Ok(AmmError::Paused)));
 }
 
 #[test]
@@ -3737,13 +3736,14 @@ fn test_circuit_breaker_while_tripped_all_mutating_entrypoints_return_paused() {
         amm.try_add_liquidity(&provider, &1_000, &1_000, &0, &u64::MAX),
         Err(Ok(AmmError::Paused))
     );
-    // Exits remain allowed while paused:
+    // The pro-rata exit stays open; the swap-based one does not.
     assert!(amm
         .try_remove_liquidity(&provider, &1_000, &0, &0, &u64::MAX)
         .is_ok());
-    assert!(amm
-        .try_remove_liquidity_one_sided(&provider, &1_000, &ts.ta_addr, &0, &u64::MAX)
-        .is_ok());
+    assert_eq!(
+        amm.try_remove_liquidity_one_sided(&provider, &1_000, &ts.ta_addr, &0, &u64::MAX),
+        Err(Ok(AmmError::Paused))
+    );
     assert_eq!(
         amm.try_flash_loan(&provider, &100, &0, &soroban_sdk::Bytes::new(env)),
         Err(Ok(AmmError::Paused))
@@ -5630,640 +5630,147 @@ fn test_fot_token_two_percent_deduction_mints_from_actual_and_locks() {
     assert_eq!(lp.balance(&amm_addr), 1_000);
 }
 
-// ── Paused Policy Tests ───────────────────────────────────────────────────────
+// ── Pause policy ──────────────────────────────────────────────────────────────
+//
+// A paused pool blocks swaps, deposits, flash loans and the one-sided exit
+// (which swaps against the reserves). `remove_liquidity` pays out pro rata
+// with no price impact and stays open so LP funds are never trapped.
 
-#[test]
-fn test_remove_liquidity_while_paused_exact_twin_parity() {
-    // Twin setup: pool A (paused) vs pool B (unpaused)
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(12345);
-    let admin = Address::generate(&env);
-
-    let (ta, ta_sac) = create_sac(&env, &admin);
-    let (tb, tb_sac) = create_sac(&env, &admin);
-
-    // Pool A (will be paused)
-    let amm_a_addr = env.register_contract(None, AmmPool);
-    let lp_a_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_a_addr).initialize(
-        &amm_a_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_a = AmmPoolClient::new(&env, &amm_a_addr);
-    amm_a.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_a_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    // Pool B (unpaused twin)
-    let amm_b_addr = env.register_contract(None, AmmPool);
-    let lp_b_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_b_addr).initialize(
-        &amm_b_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_b = AmmPoolClient::new(&env, &amm_b_addr);
-    amm_b.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_b_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    let provider = Address::generate(&env);
-    ta_sac.mint(&provider, &20_000_000);
-    tb_sac.mint(&provider, &20_000_000);
-
-    let shares_a = amm_a.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    let shares_b = amm_b.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    assert_eq!(shares_a, shares_b);
-
-    // Pause Pool A
-    amm_a.pause();
-    assert!(amm_a.is_paused());
-    assert!(!amm_b.is_paused());
-
-    // Both redeem half their shares
-    let redeem_shares = shares_a / 2;
-    let (out_a_paused, out_b_paused) =
-        amm_a.remove_liquidity(&provider, &redeem_shares, &0, &0, &u64::MAX);
-    let (out_a_unpaused, out_b_unpaused) =
-        amm_b.remove_liquidity(&provider, &redeem_shares, &0, &0, &u64::MAX);
-
-    assert_eq!(out_a_paused, out_a_unpaused);
-    assert_eq!(out_b_paused, out_b_unpaused);
-
-    let info_a = amm_a.get_info();
-    let info_b = amm_b.get_info();
-    assert_eq!(info_a.reserve_a, info_b.reserve_a);
-    assert_eq!(info_a.reserve_b, info_b.reserve_b);
-    assert_eq!(info_a.total_shares, info_b.total_shares);
-}
-
-#[test]
-fn test_remove_liquidity_one_sided_token_a_while_paused_twin_parity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(12345);
-    let admin = Address::generate(&env);
-
-    let (ta, ta_sac) = create_sac(&env, &admin);
-    let (tb, tb_sac) = create_sac(&env, &admin);
-
-    let amm_a_addr = env.register_contract(None, AmmPool);
-    let lp_a_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_a_addr).initialize(
-        &amm_a_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_a = AmmPoolClient::new(&env, &amm_a_addr);
-    amm_a.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_a_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    let amm_b_addr = env.register_contract(None, AmmPool);
-    let lp_b_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_b_addr).initialize(
-        &amm_b_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_b = AmmPoolClient::new(&env, &amm_b_addr);
-    amm_b.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_b_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    let provider = Address::generate(&env);
-    ta_sac.mint(&provider, &20_000_000);
-    tb_sac.mint(&provider, &20_000_000);
-
-    let shares_a = amm_a.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    let shares_b = amm_b.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    assert_eq!(shares_a, shares_b);
-
-    amm_a.pause();
-    assert!(amm_a.is_paused());
-
-    let redeem_shares = shares_a / 4;
-    let out_a_paused =
-        amm_a.remove_liquidity_one_sided(&provider, &redeem_shares, &ta.address, &0, &u64::MAX);
-    let out_a_unpaused =
-        amm_b.remove_liquidity_one_sided(&provider, &redeem_shares, &ta.address, &0, &u64::MAX);
-
-    assert_eq!(out_a_paused, out_a_unpaused);
-
-    let info_a = amm_a.get_info();
-    let info_b = amm_b.get_info();
-    assert_eq!(info_a.reserve_a, info_b.reserve_a);
-    assert_eq!(info_a.reserve_b, info_b.reserve_b);
-    assert_eq!(info_a.total_shares, info_b.total_shares);
-}
-
-#[test]
-fn test_remove_liquidity_one_sided_token_b_while_paused_twin_parity() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(12345);
-    let admin = Address::generate(&env);
-
-    let (ta, ta_sac) = create_sac(&env, &admin);
-    let (tb, tb_sac) = create_sac(&env, &admin);
-
-    let amm_a_addr = env.register_contract(None, AmmPool);
-    let lp_a_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_a_addr).initialize(
-        &amm_a_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_a = AmmPoolClient::new(&env, &amm_a_addr);
-    amm_a.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_a_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    let amm_b_addr = env.register_contract(None, AmmPool);
-    let lp_b_addr = env.register_contract(None, LpToken);
-    token::LpTokenClient::new(&env, &lp_b_addr).initialize(
-        &amm_b_addr,
-        &soroban_sdk::String::from_str(&env, "AMM LP Token"),
-        &soroban_sdk::String::from_str(&env, "ALP"),
-        &7u32,
-    );
-    let amm_b = AmmPoolClient::new(&env, &amm_b_addr);
-    amm_b.initialize(
-        &admin,
-        &ta.address,
-        &tb.address,
-        &lp_b_addr,
-        &30_i128,
-        &admin,
-        &0_i128,
-    );
-
-    let provider = Address::generate(&env);
-    ta_sac.mint(&provider, &20_000_000);
-    tb_sac.mint(&provider, &20_000_000);
-
-    let shares_a = amm_a.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    let shares_b = amm_b.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
-    assert_eq!(shares_a, shares_b);
-
-    amm_a.pause();
-    assert!(amm_a.is_paused());
-
-    let redeem_shares = shares_a / 4;
-    let out_b_paused =
-        amm_a.remove_liquidity_one_sided(&provider, &redeem_shares, &tb.address, &0, &u64::MAX);
-    let out_b_unpaused =
-        amm_b.remove_liquidity_one_sided(&provider, &redeem_shares, &tb.address, &0, &u64::MAX);
-
-    assert_eq!(out_b_paused, out_b_unpaused);
-
-    let info_a = amm_a.get_info();
-    let info_b = amm_b.get_info();
-    assert_eq!(info_a.reserve_a, info_b.reserve_a);
-    assert_eq!(info_a.reserve_b, info_b.reserve_b);
-    assert_eq!(info_a.total_shares, info_b.total_shares);
-}
-
-#[test]
-fn test_paused_blocks_swap() {
+/// Pool seeded by a single provider, ready to be paused.
+fn paused_policy_pool() -> (TestSetup, Address, i128) {
     let ts = setup_pool(30);
-    let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
+    let env = &ts.env;
+    let amm = AmmPoolClient::new(env, &ts.amm_addr);
+    let provider = Address::generate(env);
+    StellarAssetClient::new(env, &ts.ta_addr).mint(&provider, &20_000_000_i128);
+    StellarAssetClient::new(env, &ts.tb_addr).mint(&provider, &20_000_000_i128);
+    let shares = AddLiquidity::new(&amm, &provider, 10_000_000, 10_000_000).execute();
+    (ts, provider, shares)
+}
 
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
+#[test]
+fn test_remove_liquidity_while_paused_pays_out_pro_rata() {
+    let (ts, provider, shares) = paused_policy_pool();
+    let env = &ts.env;
+    let amm = AmmPoolClient::new(env, &ts.amm_addr);
+    let ta = StellarTokenClient::new(env, &ts.ta_addr);
+    let tb = StellarTokenClient::new(env, &ts.tb_addr);
 
     amm.pause();
     assert!(amm.is_paused());
 
-    let res = amm.try_swap(&provider, &ts.ta_addr, &1_000, &0, &u64::MAX);
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
+    let before = amm.get_info();
+    let redeem = shares / 2;
+    let expected_a = before.reserve_a * redeem / before.total_shares;
+    let expected_b = before.reserve_b * redeem / before.total_shares;
+    let bal_a = ta.balance(&provider);
+    let bal_b = tb.balance(&provider);
+
+    let (out_a, out_b) = amm.remove_liquidity(&provider, &redeem, &0, &0, &u64::MAX);
+
+    assert_eq!((out_a, out_b), (expected_a, expected_b));
+    assert_eq!(ta.balance(&provider), bal_a + expected_a);
+    assert_eq!(tb.balance(&provider), bal_b + expected_b);
+    let after = amm.get_info();
+    assert_eq!(after.reserve_a, before.reserve_a - expected_a);
+    assert_eq!(after.reserve_b, before.reserve_b - expected_b);
+    assert_eq!(after.total_shares, before.total_shares - redeem);
+    assert!(amm.is_paused(), "an exit must not unpause the pool");
 }
 
 #[test]
-fn test_paused_blocks_swap_exact_out() {
-    let ts = setup_pool(30);
+fn test_exits_allowed_when_paused_view_matches_behaviour() {
+    let (ts, provider, shares) = paused_policy_pool();
     let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
 
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
-
+    // The view is a policy flag, so it holds before and after a pause...
+    assert!(amm.exits_allowed_when_paused());
     amm.pause();
     assert!(amm.is_paused());
+    assert!(amm.exits_allowed_when_paused());
 
-    let res = amm.try_swap_exact_out(&provider, &ts.tb_addr, &100, &10_000, &u64::MAX);
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
+    // ...and it is backed by the entrypoint it advertises.
+    assert!(amm
+        .try_remove_liquidity(&provider, &(shares / 2), &0, &0, &u64::MAX)
+        .is_ok());
 }
 
 #[test]
-fn test_paused_blocks_swap_fot() {
-    let ts = setup_pool(30);
+fn test_remove_liquidity_one_sided_blocked_while_paused() {
+    let (ts, provider, shares) = paused_policy_pool();
     let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
-
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
-
     amm.pause();
-    assert!(amm.is_paused());
 
-    let res = amm.try_swap_fot(&provider, &ts.ta_addr, &1_000, &0, &0, &u64::MAX, &None);
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
+    for token_out in [&ts.ta_addr, &ts.tb_addr] {
+        assert_eq!(
+            amm.try_remove_liquidity_one_sided(&provider, &(shares / 4), token_out, &0, &u64::MAX),
+            Err(Ok(AmmError::Paused))
+        );
+    }
+    assert_eq!(amm.shares_of(&provider), shares, "no shares may be burned");
 }
 
 #[test]
-fn test_paused_blocks_add_liquidity() {
-    let ts = setup_pool(30);
-    let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
-
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
-
+fn test_paused_blocks_trading_deposits_and_flash_loans() {
+    let (ts, provider, _) = paused_policy_pool();
+    let env = &ts.env;
+    let amm = AmmPoolClient::new(env, &ts.amm_addr);
     amm.pause();
-    assert!(amm.is_paused());
 
-    let res = amm.try_add_liquidity(&provider, &1_000, &1_000, &0, &u64::MAX);
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
+    assert_eq!(
+        amm.try_swap(&provider, &ts.ta_addr, &1_000, &0, &u64::MAX),
+        Err(Ok(AmmError::Paused))
+    );
+    assert_eq!(
+        amm.try_swap_exact_out(&provider, &ts.tb_addr, &100, &10_000, &u64::MAX),
+        Err(Ok(AmmError::Paused))
+    );
+    assert_eq!(
+        amm.try_swap_fot(&provider, &ts.ta_addr, &1_000, &0, &0, &u64::MAX, &None),
+        Err(Ok(AmmError::Paused))
+    );
+    assert_eq!(
+        amm.try_add_liquidity(&provider, &1_000, &1_000, &0, &u64::MAX),
+        Err(Ok(AmmError::Paused))
+    );
+    assert_eq!(
+        amm.try_add_liquidity_fot(&provider, &1_000, &1_000, &0, &0, &0, &u64::MAX),
+        Err(Ok(AmmError::Paused))
+    );
+    assert_eq!(
+        amm.try_flash_loan(&provider, &1_000, &0, &soroban_sdk::Bytes::new(env)),
+        Err(Ok(AmmError::Paused))
+    );
 }
 
 #[test]
-fn test_paused_blocks_add_liquidity_fot() {
-    let ts = setup_pool(30);
-    let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
-
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
-
-    amm.pause();
-    assert!(amm.is_paused());
-
-    let res = amm.try_add_liquidity_fot(&provider, &1_000, &1_000, &0, &0, &0, &u64::MAX);
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
-}
-
-#[test]
-fn test_paused_blocks_flash_loan() {
-    let ts = setup_pool(30);
-    let amm = AmmPoolClient::new(&ts.env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(&ts.env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(&ts.env, &ts.tb_addr);
-
-    let provider = Address::generate(&ts.env);
-    ta_sac.mint(&provider, &10_000_000);
-    tb_sac.mint(&provider, &10_000_000);
-    amm.add_liquidity(&provider, &5_000_000, &5_000_000, &0, &u64::MAX);
-
-    amm.pause();
-    assert!(amm.is_paused());
-
-    let res = amm.try_flash_loan(&provider, &1_000, &0, &soroban_sdk::Bytes::new(&ts.env));
-    assert_eq!(res, Err(Ok(AmmError::Paused)));
-}
-
-#[test]
-fn test_circuit_breaker_paused_allows_withdrawals_in_same_ledger() {
+fn test_circuit_breaker_trip_still_lets_lps_remove_liquidity() {
     let ts = setup_pool(30);
     let env = &ts.env;
     env.ledger().with_mut(|li| {
         li.sequence_number = 42;
         li.timestamp = 5_000;
     });
-
     let amm = AmmPoolClient::new(env, &ts.amm_addr);
-    let ta_sac = StellarAssetClient::new(env, &ts.ta_addr);
-    let tb_sac = StellarAssetClient::new(env, &ts.tb_addr);
-
     amm.set_circuit_breaker_config(&100_i128, &600_u64);
 
     let provider = Address::generate(env);
-    ta_sac.mint(&provider, &20_000_000);
-    tb_sac.mint(&provider, &20_000_000);
-    let shares = amm.add_liquidity(&provider, &10_000_000, &10_000_000, &0, &u64::MAX);
+    StellarAssetClient::new(env, &ts.ta_addr).mint(&provider, &20_000_000_i128);
+    StellarAssetClient::new(env, &ts.tb_addr).mint(&provider, &20_000_000_i128);
+    let shares = AddLiquidity::new(&amm, &provider, 10_000_000, 10_000_000).execute();
 
-    // Trip circuit breaker
-    let out = amm.swap(&provider, &ts.ta_addr, &5_000_000, &0, &u64::MAX);
-    assert_eq!(out, 0);
+    // A large swap trips the breaker and pauses the pool.
+    assert_eq!(
+        amm.swap(&provider, &ts.ta_addr, &5_000_000, &0, &u64::MAX),
+        0
+    );
     assert!(amm.is_paused());
-    assert_eq!(env.ledger().timestamp(), 5_000);
 
-    // In the EXACT SAME ledger timestamp, provider can remove liquidity
-    let res = amm.try_remove_liquidity(&provider, &(shares / 4), &0, &0, &u64::MAX);
-    assert!(res.is_ok());
-
-    let res_1s =
-        amm.try_remove_liquidity_one_sided(&provider, &(shares / 8), &ts.ta_addr, &0, &u64::MAX);
-    assert!(res_1s.is_ok());
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum PausePolicy {
-    /// Function execution is halted with AmmError::Paused when the pool is paused.
-    Blocked,
-    /// Function remains operational when the pool is paused (exits, admin unpause/emergency, views).
-    Allowed,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum AmmPublicEntryPoint {
-    Initialize,
-    InitializeWithEmergencyDelay,
-    InitializeWithFlashLoanFee,
-    SetOracle,
-    SetMaxOracleDeviationBps,
-    Pause,
-    Unpause,
-    SetLpLocker,
-    IsPaused,
-    IsDrained,
-    AnnounceEmergencyWithdraw,
-    CancelEmergencyWithdraw,
-    GetEmergencyAnnouncement,
-    GetEmergencyDelay,
-    EmergencyWithdraw,
-    IsLocked,
-    FlashLoanLocked,
-    ForceUnlock,
-    SetCircuitBreakerConfig,
-    GetCircuitBreakerConfig,
-    TryCircuitBreakerRecovery,
-    TripCircuitBreaker,
-    SetProtocolFee,
-    GetProtocolFee,
-    SetLpRebate,
-    GetLpRebate,
-    SetMultisig,
-    GetMultisigConfig,
-    GetMultisig,
-    ProposeEmergencyWithdraw,
-    ProposeSetMultisig,
-    ApproveMultisigProposal,
-    GetMultisigProposal,
-    ExecMultisigEmergencyWd,
-    ExecMultisigSetMultisig,
-    UpdateFee,
-    UpdateFlashLoanFee,
-    ProposeAdmin,
-    AcceptAdmin,
-    Upgrade,
-    GetPendingAdmin,
-    AddLiquidity,
-    RemoveLiquidity,
-    RemoveLiquidityOneSided,
-    Swap,
-    SwapExactOut,
-    WithdrawProtocolFees,
-    FlashLoan,
-    PriceRatio,
-    GetAmountOut,
-    SimulateSwap,
-    GetAmountIn,
-    GetFeeInfo,
-    GetInfo,
-    GetAccruedFees,
-    SharesOf,
-    SwapFot,
-    AddLiquidityFot,
-    GetLiquidityCumulative,
-    GetPriceCumulative,
-}
-
-impl AmmPublicEntryPoint {
-    fn all() -> &'static [AmmPublicEntryPoint] {
-        &[
-            AmmPublicEntryPoint::Initialize,
-            AmmPublicEntryPoint::InitializeWithEmergencyDelay,
-            AmmPublicEntryPoint::InitializeWithFlashLoanFee,
-            AmmPublicEntryPoint::SetOracle,
-            AmmPublicEntryPoint::SetMaxOracleDeviationBps,
-            AmmPublicEntryPoint::Pause,
-            AmmPublicEntryPoint::Unpause,
-            AmmPublicEntryPoint::SetLpLocker,
-            AmmPublicEntryPoint::IsPaused,
-            AmmPublicEntryPoint::IsDrained,
-            AmmPublicEntryPoint::AnnounceEmergencyWithdraw,
-            AmmPublicEntryPoint::CancelEmergencyWithdraw,
-            AmmPublicEntryPoint::GetEmergencyAnnouncement,
-            AmmPublicEntryPoint::GetEmergencyDelay,
-            AmmPublicEntryPoint::EmergencyWithdraw,
-            AmmPublicEntryPoint::IsLocked,
-            AmmPublicEntryPoint::FlashLoanLocked,
-            AmmPublicEntryPoint::ForceUnlock,
-            AmmPublicEntryPoint::SetCircuitBreakerConfig,
-            AmmPublicEntryPoint::GetCircuitBreakerConfig,
-            AmmPublicEntryPoint::TryCircuitBreakerRecovery,
-            AmmPublicEntryPoint::TripCircuitBreaker,
-            AmmPublicEntryPoint::SetProtocolFee,
-            AmmPublicEntryPoint::GetProtocolFee,
-            AmmPublicEntryPoint::SetLpRebate,
-            AmmPublicEntryPoint::GetLpRebate,
-            AmmPublicEntryPoint::SetMultisig,
-            AmmPublicEntryPoint::GetMultisigConfig,
-            AmmPublicEntryPoint::GetMultisig,
-            AmmPublicEntryPoint::ProposeEmergencyWithdraw,
-            AmmPublicEntryPoint::ProposeSetMultisig,
-            AmmPublicEntryPoint::ApproveMultisigProposal,
-            AmmPublicEntryPoint::GetMultisigProposal,
-            AmmPublicEntryPoint::ExecMultisigEmergencyWd,
-            AmmPublicEntryPoint::ExecMultisigSetMultisig,
-            AmmPublicEntryPoint::UpdateFee,
-            AmmPublicEntryPoint::UpdateFlashLoanFee,
-            AmmPublicEntryPoint::ProposeAdmin,
-            AmmPublicEntryPoint::AcceptAdmin,
-            AmmPublicEntryPoint::Upgrade,
-            AmmPublicEntryPoint::GetPendingAdmin,
-            AmmPublicEntryPoint::AddLiquidity,
-            AmmPublicEntryPoint::RemoveLiquidity,
-            AmmPublicEntryPoint::RemoveLiquidityOneSided,
-            AmmPublicEntryPoint::Swap,
-            AmmPublicEntryPoint::SwapExactOut,
-            AmmPublicEntryPoint::WithdrawProtocolFees,
-            AmmPublicEntryPoint::FlashLoan,
-            AmmPublicEntryPoint::PriceRatio,
-            AmmPublicEntryPoint::GetAmountOut,
-            AmmPublicEntryPoint::SimulateSwap,
-            AmmPublicEntryPoint::GetAmountIn,
-            AmmPublicEntryPoint::GetFeeInfo,
-            AmmPublicEntryPoint::GetInfo,
-            AmmPublicEntryPoint::GetAccruedFees,
-            AmmPublicEntryPoint::SharesOf,
-            AmmPublicEntryPoint::SwapFot,
-            AmmPublicEntryPoint::AddLiquidityFot,
-            AmmPublicEntryPoint::GetLiquidityCumulative,
-            AmmPublicEntryPoint::GetPriceCumulative,
-        ]
-    }
-
-    fn pause_policy(&self) -> PausePolicy {
-        match self {
-            // Trading, deposits, and flash loans are blocked when paused.
-            AmmPublicEntryPoint::Swap
-            | AmmPublicEntryPoint::SwapExactOut
-            | AmmPublicEntryPoint::SwapFot
-            | AmmPublicEntryPoint::AddLiquidity
-            | AmmPublicEntryPoint::AddLiquidityFot
-            | AmmPublicEntryPoint::FlashLoan => PausePolicy::Blocked,
-
-            // Liquidity withdrawals (exits) remain allowed when paused:
-            AmmPublicEntryPoint::RemoveLiquidity | AmmPublicEntryPoint::RemoveLiquidityOneSided => {
-                PausePolicy::Allowed
-            }
-
-            // Views, admin controls, emergency mechanisms, unpause, and protocol maintenance remain allowed when paused:
-            AmmPublicEntryPoint::Initialize
-            | AmmPublicEntryPoint::InitializeWithEmergencyDelay
-            | AmmPublicEntryPoint::InitializeWithFlashLoanFee
-            | AmmPublicEntryPoint::SetOracle
-            | AmmPublicEntryPoint::SetMaxOracleDeviationBps
-            | AmmPublicEntryPoint::Pause
-            | AmmPublicEntryPoint::Unpause
-            | AmmPublicEntryPoint::SetLpLocker
-            | AmmPublicEntryPoint::IsPaused
-            | AmmPublicEntryPoint::IsDrained
-            | AmmPublicEntryPoint::AnnounceEmergencyWithdraw
-            | AmmPublicEntryPoint::CancelEmergencyWithdraw
-            | AmmPublicEntryPoint::GetEmergencyAnnouncement
-            | AmmPublicEntryPoint::GetEmergencyDelay
-            | AmmPublicEntryPoint::EmergencyWithdraw
-            | AmmPublicEntryPoint::IsLocked
-            | AmmPublicEntryPoint::FlashLoanLocked
-            | AmmPublicEntryPoint::ForceUnlock
-            | AmmPublicEntryPoint::SetCircuitBreakerConfig
-            | AmmPublicEntryPoint::GetCircuitBreakerConfig
-            | AmmPublicEntryPoint::TryCircuitBreakerRecovery
-            | AmmPublicEntryPoint::TripCircuitBreaker
-            | AmmPublicEntryPoint::SetProtocolFee
-            | AmmPublicEntryPoint::GetProtocolFee
-            | AmmPublicEntryPoint::SetLpRebate
-            | AmmPublicEntryPoint::GetLpRebate
-            | AmmPublicEntryPoint::SetMultisig
-            | AmmPublicEntryPoint::GetMultisigConfig
-            | AmmPublicEntryPoint::GetMultisig
-            | AmmPublicEntryPoint::ProposeEmergencyWithdraw
-            | AmmPublicEntryPoint::ProposeSetMultisig
-            | AmmPublicEntryPoint::ApproveMultisigProposal
-            | AmmPublicEntryPoint::GetMultisigProposal
-            | AmmPublicEntryPoint::ExecMultisigEmergencyWd
-            | AmmPublicEntryPoint::ExecMultisigSetMultisig
-            | AmmPublicEntryPoint::UpdateFee
-            | AmmPublicEntryPoint::UpdateFlashLoanFee
-            | AmmPublicEntryPoint::ProposeAdmin
-            | AmmPublicEntryPoint::AcceptAdmin
-            | AmmPublicEntryPoint::Upgrade
-            | AmmPublicEntryPoint::GetPendingAdmin
-            | AmmPublicEntryPoint::WithdrawProtocolFees
-            | AmmPublicEntryPoint::PriceRatio
-            | AmmPublicEntryPoint::GetAmountOut
-            | AmmPublicEntryPoint::SimulateSwap
-            | AmmPublicEntryPoint::GetAmountIn
-            | AmmPublicEntryPoint::GetFeeInfo
-            | AmmPublicEntryPoint::GetInfo
-            | AmmPublicEntryPoint::GetAccruedFees
-            | AmmPublicEntryPoint::SharesOf
-            | AmmPublicEntryPoint::GetLiquidityCumulative
-            | AmmPublicEntryPoint::GetPriceCumulative => PausePolicy::Allowed,
-        }
-    }
-}
-
-#[test]
-fn test_public_entrypoint_pause_policy_table() {
-    // Assert exactly 60 public functions in AmmPool are enumerated.
-    assert_eq!(AmmPublicEntryPoint::all().len(), 60);
-
-    // Verify policy mappings:
+    // Same ledger: the pro-rata exit works, the swap-based one does not.
+    let (out_a, out_b) = amm.remove_liquidity(&provider, &(shares / 4), &0, &0, &u64::MAX);
+    assert!(out_a > 0 && out_b > 0);
     assert_eq!(
-        AmmPublicEntryPoint::RemoveLiquidity.pause_policy(),
-        PausePolicy::Allowed
+        amm.try_remove_liquidity_one_sided(&provider, &(shares / 8), &ts.ta_addr, &0, &u64::MAX),
+        Err(Ok(AmmError::Paused))
     );
-    assert_eq!(
-        AmmPublicEntryPoint::RemoveLiquidityOneSided.pause_policy(),
-        PausePolicy::Allowed
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::Swap.pause_policy(),
-        PausePolicy::Blocked
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::SwapExactOut.pause_policy(),
-        PausePolicy::Blocked
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::SwapFot.pause_policy(),
-        PausePolicy::Blocked
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::AddLiquidity.pause_policy(),
-        PausePolicy::Blocked
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::AddLiquidityFot.pause_policy(),
-        PausePolicy::Blocked
-    );
-    assert_eq!(
-        AmmPublicEntryPoint::FlashLoan.pause_policy(),
-        PausePolicy::Blocked
-    );
-
-    for ep in AmmPublicEntryPoint::all() {
-        // Must have an explicit policy mapped.
-        let policy = ep.pause_policy();
-        match policy {
-            PausePolicy::Blocked | PausePolicy::Allowed => {}
-        }
-    }
 }

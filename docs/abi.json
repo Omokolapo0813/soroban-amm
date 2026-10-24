@@ -2088,6 +2088,16 @@
       },
       {
         "function_v0": {
+          "doc": "Whether LPs can still redeem through `remove_liquidity` while the pool\\nis paused. Always `true`: the pro-rata exit has no pause guard, so\\nintegrators, routers and UIs can use this to confirm that funds are\\nnever trapped by a pause or circuit breaker trip.\\n\\nOnly `remove_liquidity` is covered. `remove_liquidity_one_sided` swaps\\nagainst the reserves and is blocked while paused, and a pool drained by\\nan emergency withdrawal rejects every exit (see `is_drained`).",
+          "inputs": [],
+          "name": "exits_allowed_when_paused",
+          "outputs": [
+            "bool"
+          ]
+        }
+      },
+      {
+        "function_v0": {
           "doc": "Execute multisig emergency-withdraw proposal `proposal_id`.\\n\\nAny signer may call this once the quorum is reached, the emergency delay\\nhas passed since it was reached, and the pool is paused. Sweeps reserves\\nand accrued protocol fees to the proposal's recipient.",
           "inputs": [
             {

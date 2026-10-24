@@ -146,6 +146,10 @@
           ]
         },
         {
+          "name": "exits_allowed_when_paused",
+          "inputs": []
+        },
+        {
           "name": "flash_loan",
           "inputs": [
             {
@@ -3984,6 +3988,47 @@
           ]
         },
         {
+          "name": "create_campaign_with_grace",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "Address"
+            },
+            {
+              "name": "pool",
+              "type": "Address"
+            },
+            {
+              "name": "lp_token",
+              "type": "Address"
+            },
+            {
+              "name": "reward_token",
+              "type": "Address"
+            },
+            {
+              "name": "start_time",
+              "type": "u64"
+            },
+            {
+              "name": "end_time",
+              "type": "u64"
+            },
+            {
+              "name": "reward_rate",
+              "type": "i128"
+            },
+            {
+              "name": "funding_amount",
+              "type": "i128"
+            },
+            {
+              "name": "claim_grace_secs",
+              "type": "u64"
+            }
+          ]
+        },
+        {
           "name": "get_active_campaigns",
           "inputs": []
         },
@@ -4075,6 +4120,15 @@
             {
               "name": "limit",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "get_claim_grace",
+          "inputs": [
+            {
+              "name": "campaign_id",
+              "type": "u64"
             }
           ]
         },
@@ -4175,6 +4229,10 @@
           ]
         },
         {
+          "name": "is_paused",
+          "inputs": []
+        },
+        {
           "name": "list_campaigns",
           "inputs": []
         },
@@ -4205,6 +4263,32 @@
             {
               "name": "limit",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "migrate_indexes",
+          "inputs": [
+            {
+              "name": "kind",
+              "type": "u32"
+            },
+            {
+              "name": "offset",
+              "type": "u32"
+            },
+            {
+              "name": "limit",
+              "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "pause",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "Address"
             }
           ]
         },
@@ -4273,6 +4357,15 @@
           ]
         },
         {
+          "name": "unpause",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "Address"
+            }
+          ]
+        },
+        {
           "name": "unstake",
           "inputs": [
             {
@@ -4290,11 +4383,33 @@
           ]
         },
         {
+          "name": "upgrade",
+          "inputs": [
+            {
+              "name": "caller",
+              "type": "Address"
+            },
+            {
+              "name": "new_wasm_hash",
+              "type": "BytesN<32>"
+            }
+          ]
+        },
+        {
           "name": "uses_staking",
           "inputs": [
             {
               "name": "campaign_id",
               "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "version",
+          "inputs": [
+            {
+              "name": "_env",
+              "type": "Env"
             }
           ]
         }
@@ -4620,6 +4735,19 @@
             {
               "name": "beneficiary",
               "type": "Address"
+            }
+          ]
+        },
+        {
+          "name": "upgrade",
+          "inputs": [
+            {
+              "name": "governance",
+              "type": "Address"
+            },
+            {
+              "name": "new_wasm_hash",
+              "type": "BytesN<32>"
             }
           ]
         },
@@ -5111,6 +5239,28 @@
       "source": "contracts/twap_consumer/src/lib.rs",
       "entrypoints": [
         {
+          "name": "accept_keeper",
+          "inputs": [
+            {
+              "name": "new_keeper",
+              "type": "Address"
+            }
+          ]
+        },
+        {
+          "name": "add_tracked_pool",
+          "inputs": [
+            {
+              "name": "pool",
+              "type": "Address"
+            },
+            {
+              "name": "pool_type",
+              "type": "PoolType"
+            }
+          ]
+        },
+        {
           "name": "assert_lending_price_safe",
           "inputs": [
             {
@@ -5201,6 +5351,10 @@
           ]
         },
         {
+          "name": "get_pending_keeper",
+          "inputs": []
+        },
+        {
           "name": "get_retention_policy",
           "inputs": []
         },
@@ -5245,6 +5399,28 @@
         {
           "name": "get_twap_all",
           "inputs": [
+            {
+              "name": "window_seconds",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "get_twap_all_safe",
+          "inputs": [
+            {
+              "name": "window_seconds",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "get_twap_batch",
+          "inputs": [
+            {
+              "name": "pools",
+              "type": "Vec<(Address, PoolType)>"
+            },
             {
               "name": "window_seconds",
               "type": "u64"
@@ -5300,6 +5476,15 @@
           ]
         },
         {
+          "name": "is_tracked",
+          "inputs": [
+            {
+              "name": "pool",
+              "type": "Address"
+            }
+          ]
+        },
+        {
           "name": "list_snapshot_timestamps",
           "inputs": [
             {
@@ -5313,6 +5498,15 @@
             {
               "name": "limit",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "propose_keeper",
+          "inputs": [
+            {
+              "name": "new_keeper",
+              "type": "Address"
             }
           ]
         },
@@ -5335,6 +5529,15 @@
             {
               "name": "max_to_remove",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "remove_tracked_pool",
+          "inputs": [
+            {
+              "name": "pool",
+              "type": "Address"
             }
           ]
         },
@@ -5384,6 +5587,15 @@
             {
               "name": "policy",
               "type": "RetentionPolicy"
+            }
+          ]
+        },
+        {
+          "name": "upgrade",
+          "inputs": [
+            {
+              "name": "new_wasm_hash",
+              "type": "BytesN<32>"
             }
           ]
         },
@@ -5570,12 +5782,43 @@
             "name": "snapshot_timestamp",
             "type": "u64"
           }
+        ],
+        "TwapSafeEntry": [
+          {
+            "name": "pool",
+            "type": "Address"
+          },
+          {
+            "name": "pool_type",
+            "type": "PoolType"
+          },
+          {
+            "name": "twap",
+            "type": "i128"
+          },
+          {
+            "name": "ok",
+            "type": "bool"
+          },
+          {
+            "name": "error_code",
+            "type": "u32"
+          }
         ]
       }
     },
     "twal_consumer": {
       "source": "contracts/twal_consumer/src/lib.rs",
       "entrypoints": [
+        {
+          "name": "accept_keeper",
+          "inputs": [
+            {
+              "name": "new_keeper",
+              "type": "Address"
+            }
+          ]
+        },
         {
           "name": "add_tracked_pool",
           "inputs": [
@@ -5617,6 +5860,10 @@
         },
         {
           "name": "get_keeper",
+          "inputs": []
+        },
+        {
+          "name": "get_pending_keeper",
           "inputs": []
         },
         {
@@ -5725,6 +5972,24 @@
           ]
         },
         {
+          "name": "max_servable_window",
+          "inputs": [
+            {
+              "name": "pool",
+              "type": "Address"
+            }
+          ]
+        },
+        {
+          "name": "propose_keeper",
+          "inputs": [
+            {
+              "name": "new_keeper",
+              "type": "Address"
+            }
+          ]
+        },
+        {
           "name": "remove_tracked_pool",
           "inputs": [
             {
@@ -5748,6 +6013,15 @@
             {
               "name": "pool",
               "type": "Address"
+            }
+          ]
+        },
+        {
+          "name": "upgrade",
+          "inputs": [
+            {
+              "name": "new_wasm_hash",
+              "type": "soroban_sdk::BytesN<32>"
             }
           ]
         }
@@ -6268,6 +6542,10 @@
           "inputs": []
         },
         {
+          "name": "get_window_bounds",
+          "inputs": []
+        },
+        {
           "name": "initialize",
           "inputs": [
             {
@@ -6369,6 +6647,23 @@
             {
               "name": "n",
               "type": "u32"
+            }
+          ]
+        },
+        {
+          "name": "set_window_bounds",
+          "inputs": [
+            {
+              "name": "admin",
+              "type": "Address"
+            },
+            {
+              "name": "min_secs",
+              "type": "u64"
+            },
+            {
+              "name": "max_secs",
+              "type": "u64"
             }
           ]
         },

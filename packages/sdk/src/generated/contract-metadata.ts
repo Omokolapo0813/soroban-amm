@@ -146,7 +146,11 @@ export const CONTRACT_METADATA = {
       "21": "InvalidStakeAmount",
       "22": "InsufficientStake",
       "23": "CampaignEnded",
-      "24": "LegacyCampaign"
+      "24": "LegacyCampaign",
+      "25": "InvalidClaimGrace",
+      "26": "ClaimGraceActive",
+      "27": "InvalidIndexKind",
+      "28": "Paused"
     },
     "structs": {
       "Campaign": [
@@ -260,7 +264,8 @@ export const CONTRACT_METADATA = {
       "9": "NoPendingTreasury",
       "10": "NotTreasury",
       "11": "InsufficientFunding",
-      "12": "TooManySchedules"
+      "12": "TooManySchedules",
+      "13": "LpTokenMismatch"
     },
     "structs": {
       "PolVesting": [
@@ -435,7 +440,12 @@ export const CONTRACT_METADATA = {
       "13": "Unauthorized",
       "14": "CrossContractCallFailed",
       "15": "SnapshotRateLimited",
-      "16": "PoolNotRegistered"
+      "16": "PoolNotRegistered",
+      "17": "TooManyTrackedPools",
+      "18": "NotTracked",
+      "19": "TooManyPools",
+      "20": "NoPendingKeeper",
+      "21": "WrongPendingKeeper"
     },
     "structs": {
       "AmmPoolInfo": [
@@ -536,6 +546,28 @@ export const CONTRACT_METADATA = {
           "type": "i128"
         }
       ],
+      "TwapSafeEntry": [
+        {
+          "name": "pool",
+          "type": "Address"
+        },
+        {
+          "name": "pool_type",
+          "type": "PoolType"
+        },
+        {
+          "name": "twap",
+          "type": "i128"
+        },
+        {
+          "name": "ok",
+          "type": "bool"
+        },
+        {
+          "name": "error_code",
+          "type": "u32"
+        }
+      ],
       "PriceSnapshot": [
         {
           "name": "cum_a",
@@ -598,7 +630,10 @@ export const CONTRACT_METADATA = {
       "10": "TooManyPools",
       "11": "CrossContractCallFailed",
       "12": "MissingClAccumulator",
-      "13": "ArithmeticOverflow"
+      "13": "ArithmeticOverflow",
+      "14": "NoPendingKeeper",
+      "15": "WrongPendingKeeper",
+      "16": "CannotDeleteRequiredSnapshot"
     },
     "structs": {
       "AmmPoolInfo": [
@@ -849,7 +884,10 @@ export const CONTRACT_METADATA = {
       "16": "DeadlineTooFar",
       "17": "OrderNotExpired",
       "18": "NothingToClaim",
-      "19": "TooManyVenues"
+      "19": "TooManyVenues",
+      "20": "NotInitialized",
+      "21": "InvalidBatchWindow",
+      "22": "InvalidWindowBounds"
     },
     "structs": {
       "Order": [
