@@ -21,6 +21,7 @@ jobs:
                   bash scripts/check_pol_vesting_deploy.test.sh
                   bash scripts/check_twap_consumer_deploy.test.sh
                   bash scripts/check_batch_router_deploy.test.sh
+                  bash scripts/e2e/common.test.sh
             # Channel, components and targets all come from
             # rust-toolchain.toml, so CI cannot drift onto a newer stable than
             # contributors are running; `rustup show` installs what it asks

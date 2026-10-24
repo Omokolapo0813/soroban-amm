@@ -57,33 +57,83 @@ extract_contract_id() {
   grep -Eo 'C[A-Z0-9]{55}' | tail -n 1
 }
 
-# assert_eq_settled LABEL EXPECTED CMD... — assert_eq for a read of state that
-# a transaction changed moments ago. The node that simulates the read can
-# trail the one that applied the write by a ledger or two, so a stale answer
-# is re-read (up to five more times, 6s apart) before it counts as a failure.
-assert_eq_settled() {
-  local label="$1"
-  local expected="$2"
-  local actual attempt
-  shift 2
+# ── Assertions ──────────────────────────────────────────────────────────────
+# The public RPC endpoint is load-balanced, and the node that answers a read can
+# trail the one that applied the caller's last transaction by a ledger or two.
+# A value read straight after a write may therefore be stale, and a flow that
+# trusts it fails for reasons unrelated to the code under test.
+#
+# Every assert_* takes its "actual" argument either as a literal value or as a
+# deferred read, "@cmd:CODE". CODE runs in the caller's scope (variables and
+# functions resolve as they would inline), and a read that does not satisfy the
+# assertion is repeated up to five more times, 6s apart, before the assertion
+# fails. A fresh read costs nothing extra. Write the deferred form in single
+# quotes so the code is expanded when it runs, not when the call is made:
+#
+#   assert_eq "balance" '@cmd:balance_of "$token" "$holder"' "$expected"
+#
+# A deferred command that turns out to be a transaction (the CLI reports
+# "Transaction submitted") is never repeated: running it twice would apply it
+# twice. The assertion then fails on the first mismatch, as a literal would.
 
-  for attempt in 1 2 3 4 5 6; do
-    actual=$("$@") || actual=""
-    if [[ "$actual" == "$expected" ]]; then
+E2E_READ_ATTEMPTS="${E2E_READ_ATTEMPTS:-6}"
+E2E_READ_WAIT_SECS="${E2E_READ_WAIT_SECS:-6}"
+
+_is_eq() { [[ "$1" == "$2" ]]; }
+_is_gt() { [[ "$1" =~ ^-?[0-9]+$ ]] && (( $1 > $2 )); }
+_is_between() { [[ "$1" =~ ^-?[0-9]+$ ]] && (( $1 >= $2 && $1 <= $3 )); }
+_is_lte_abs() { [[ "$1" =~ ^-?[0-9]+$ ]] && (( ($1 < 0 ? -$1 : $1) <= $2 )); }
+_is_ne() { [[ "$1" != "$2" ]]; }
+_is_ge() { [[ "$1" =~ ^-?[0-9]+$ ]] && (( $1 >= $2 )); }
+_nonempty() { [[ -n "$1" ]]; }
+_has() { [[ "$1" == *"$2"* ]]; }
+_lacks() { [[ "$1" != *"$2"* ]]; }
+
+# _read_until LABEL SPEC PREDICATE ARGS... — print the value SPEC resolves to,
+# re-reading a deferred spec until PREDICATE VALUE ARGS... holds or the
+# attempts run out.
+_read_until() {
+  local label="$1" spec="$2" pred="$3" attempt actual errf wrote
+  shift 3
+  for (( attempt = 1; attempt <= E2E_READ_ATTEMPTS; attempt++ )); do
+    if [[ "$spec" != @cmd:* ]]; then
+      actual="$spec"
       break
     fi
-    if [[ "$attempt" -lt 6 ]]; then
-      printf '[retry] %s: read %s, expected %s; waiting in case the RPC node lags\n' "$label" "${actual:-nothing}" "$expected" >&2
-      sleep 6
+    errf=$(mktemp)
+    actual=$(eval "${spec#@cmd:}" 2>"$errf") || actual=""
+    cat "$errf" >&2
+    wrote=0
+    grep -q 'Transaction submitted' "$errf" && wrote=1
+    rm -f "$errf"
+    if "$pred" "$actual" "$@" || [[ "$wrote" -eq 1 ]]; then
+      break
+    fi
+    if (( attempt < E2E_READ_ATTEMPTS )); then
+      printf '[retry] %s: read %s; waiting in case the RPC node lags\n' "$label" "${actual:-nothing}" >&2
+      sleep "$E2E_READ_WAIT_SECS"
     fi
   done
-  assert_eq "$label" "$actual" "$expected"
+  printf '%s' "$actual"
+}
+
+# e2e_read_until LABEL CODE PREDICATE ARGS... — for a value a flow has to keep
+# and use, not just assert on. Runs CODE (in the caller's scope) until
+# PREDICATE VALUE ARGS... holds, with the same retry as the assert_* helpers,
+# and prints the last value read. Predicates: _is_eq _is_ne _is_gt _is_ge
+# _nonempty _has _lacks (e.g. `_is_gt 0`, `_is_ne "$old"`, `_has "$needle"`).
+# The caller still asserts on the result; this only waits for it to settle.
+e2e_read_until() {
+  local label="$1" code="$2" pred="$3"
+  shift 3
+  _read_until "$label" "@cmd:$code" "$pred" "$@"
 }
 
 assert_eq() {
   local label="$1"
-  local actual="$2"
   local expected="$3"
+  local actual
+  actual=$(_read_until "$label" "$2" _is_eq "$expected")
 
   if [[ "$actual" == "$expected" ]]; then
     pass "$label: $actual"
@@ -94,9 +144,10 @@ assert_eq() {
 
 assert_between() {
   local label="$1"
-  local actual="$2"
   local min="$3"
   local max="$4"
+  local actual
+  actual=$(_read_until "$label" "$2" _is_between "$min" "$max")
 
   if [[ ! "$actual" =~ ^-?[0-9]+$ ]]; then
     die "$label: expected numeric value, got '$actual'"
@@ -111,8 +162,9 @@ assert_between() {
 
 assert_gt() {
   local label="$1"
-  local actual="$2"
   local floor="$3"
+  local actual
+  actual=$(_read_until "$label" "$2" _is_gt "$floor")
 
   if [[ ! "$actual" =~ ^-?[0-9]+$ ]]; then
     die "$label: expected numeric value, got '$actual'"
@@ -126,9 +178,10 @@ assert_gt() {
 
 assert_lte_abs() {
   local label="$1"
-  local actual="$2"
   local max_abs="$3"
-  local abs="$actual"
+  local actual abs
+  actual=$(_read_until "$label" "$2" _is_lte_abs "$max_abs")
+  abs="$actual"
 
   if [[ ! "$actual" =~ ^-?[0-9]+$ ]]; then
     die "$label: expected numeric value, got '$actual'"
@@ -141,6 +194,49 @@ assert_lte_abs() {
   else
     die "$label: expected <= $max_abs dust, got $actual"
   fi
+}
+
+assert_contains() {
+  local label="$1"
+  local needle="$3"
+  local haystack
+  haystack=$(_read_until "$label" "$2" _has "$needle")
+
+  if [[ "$haystack" == *"$needle"* ]]; then
+    pass "$label"
+  else
+    die "$label: expected output to contain $needle, got: $haystack"
+  fi
+}
+
+assert_not_contains() {
+  local label="$1"
+  local needle="$3"
+  local haystack
+  haystack=$(_read_until "$label" "$2" _lacks "$needle")
+
+  if [[ "$haystack" != *"$needle"* ]]; then
+    pass "$label"
+  else
+    die "$label: expected output not to contain $needle, got: $haystack"
+  fi
+}
+
+# assert_eq_settled LABEL EXPECTED CMD ARGS... and assert_contains_settled
+# LABEL NEEDLE CMD ARGS... — the same checks with the read given as a plain
+# command line instead of an "@cmd:" string.
+assert_eq_settled() {
+  local label="$1" expected="$2" quoted
+  shift 2
+  printf -v quoted '%q ' "$@"
+  assert_eq "$label" "@cmd:$quoted" "$expected"
+}
+
+assert_contains_settled() {
+  local label="$1" needle="$2" quoted
+  shift 2
+  printf -v quoted '%q ' "$@"
+  assert_contains "$label" "@cmd:$quoted" "$needle"
 }
 
 generate_and_fund_source() {
@@ -193,51 +289,6 @@ nth_num() {
 # count_matches PATTERN — number of occurrences of PATTERN in stdin.
 count_matches() {
   { grep -Eo -- "$1" || true; } | wc -l | tr -d '[:space:]'
-}
-
-assert_contains() {
-  local label="$1"
-  local haystack="$2"
-  local needle="$3"
-
-  if [[ "$haystack" == *"$needle"* ]]; then
-    pass "$label"
-  else
-    die "$label: expected output to contain $needle, got: $haystack"
-  fi
-}
-
-# assert_contains_settled LABEL NEEDLE CMD... — assert_contains for output that
-# depends on a transaction applied moments ago; see assert_eq_settled.
-assert_contains_settled() {
-  local label="$1"
-  local needle="$2"
-  local actual attempt
-  shift 2
-
-  for attempt in 1 2 3 4 5 6; do
-    actual=$("$@") || actual=""
-    if [[ "$actual" == *"$needle"* ]]; then
-      break
-    fi
-    if [[ "$attempt" -lt 6 ]]; then
-      printf '[retry] %s: output lacks %s; waiting in case the RPC node lags\n' "$label" "$needle" >&2
-      sleep 6
-    fi
-  done
-  assert_contains "$label" "$actual" "$needle"
-}
-
-assert_not_contains() {
-  local label="$1"
-  local haystack="$2"
-  local needle="$3"
-
-  if [[ "$haystack" != *"$needle"* ]]; then
-    pass "$label"
-  else
-    die "$label: expected output not to contain $needle, got: $haystack"
-  fi
 }
 
 # invoke_as ACCOUNT CONTRACT_ID FN ARGS... — invoke with a different signer.
@@ -461,7 +512,7 @@ e2e_new_seeded_pool() {
   local tx="$2"
   local ty="$3"
   local amount="$4"
-  local out pool deadline attempt
+  local out pool deadline
 
   out=$(invoke "$factory" create_pool_with_fee_bps \
     --caller "$SOURCE_PUBLIC_KEY" \
@@ -470,12 +521,8 @@ e2e_new_seeded_pool() {
     --fee_bps 30 2>&1) || die "create_pool_with_fee_bps failed: $out"
   # The pool was created a moment ago; the node answering this read can
   # still be a ledger behind and report no pool, so poll before giving up.
-  for attempt in 1 2 3 4 5 6; do
-    pool=$(invoke "$factory" get_pool --token_a "$tx" --token_b "$ty" | extract_contract_id || true)
-    [[ -n "$pool" ]] && break
-    printf '[retry] get_pool found no pool yet; waiting in case the RPC node lags\n' >&2
-    sleep 6
-  done
+  pool=$(e2e_read_until "get_pool" \
+    'invoke "$factory" get_pool --token_a "$tx" --token_b "$ty" | extract_contract_id' _nonempty)
   if [[ -z "$pool" ]]; then
     die "factory has no pool for the pair after create_pool_with_fee_bps: $out"
   fi
@@ -497,7 +544,9 @@ e2e_new_seeded_pool() {
 # token a flow passed as token_a, and add_liquidity's amount_a/amount_b follow
 # the pool's order. Flows that deposit unequal amounts must mint by it.
 pool_token() {
-  invoke "$1" get_info | grep -Eo "\"$2\":\"C[A-Z2-7]{55}\"" | parse_address
+  local pool="$1" field="$2"
+  e2e_read_until "pool_token $field" \
+    'invoke "$pool" get_info | grep -Eo "\"$field\":\"C[A-Z2-7]{55}\"" | parse_address' _nonempty
 }
 
 # balance_of TOKEN ADDRESS — token balance as an integer.

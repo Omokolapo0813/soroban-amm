@@ -41,13 +41,13 @@ run_factory_flow() {
   pass "factory: created pool via factory: $pool_addr"
 
   # ── get_pool resolves the pair to the new address ──────────────────────
-  local resolved
-  resolved=$(invoke "$FACTORY_CONTRACT_ID" get_pool --token_a "$ta" --token_b "$tb" | extract_contract_id)
-  assert_eq "factory: get_pool resolves pair to created pool" "$resolved" "$pool_addr"
+  assert_eq "factory: get_pool resolves pair to created pool" \
+    '@cmd:invoke "$FACTORY_CONTRACT_ID" get_pool --token_a "$ta" --token_b "$tb" | extract_contract_id' "$pool_addr"
 
   # ── get_lp_token returns a real LP token ────────────────────────────────
   local lp_token
-  lp_token=$(invoke "$FACTORY_CONTRACT_ID" get_lp_token --pool "$pool_addr" | extract_contract_id)
+  lp_token=$(e2e_read_until "factory: get_lp_token" \
+    'invoke "$FACTORY_CONTRACT_ID" get_lp_token --pool "$pool_addr" | extract_contract_id' _nonempty)
   if [[ -z "$lp_token" ]]; then
     die "factory: get_lp_token returned no address for pool $pool_addr"
   fi

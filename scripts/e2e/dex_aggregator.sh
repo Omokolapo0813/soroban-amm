@@ -37,7 +37,7 @@ run_dex_aggregator_flow() {
   local agg
   agg=$(e2e_deploy dex_aggregator)
   invoke "$agg" initialize --admin "$trader" --factory "$factory" >/dev/null
-  assert_eq "dex_aggregator: starts unpaused" "$(invoke "$agg" is_paused)" "false"
+  assert_eq "dex_aggregator: starts unpaused" '@cmd:invoke "$agg" is_paused' "false"
   expect_fail "dex_aggregator: second initialize is rejected" \
     invoke "$agg" initialize --admin "$trader" --factory "$factory"
 
@@ -47,37 +47,44 @@ run_dex_aggregator_flow() {
 
   # ── one-hop quote: only the direct pool is eligible ─────────────────────
   local direct_quote direct_out direct_expected
-  direct_quote=$(invoke "$agg" get_quote \
-    --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 1)
+  direct_quote=$(e2e_read_until "dex_aggregator: one-hop quote" \
+    'invoke "$agg" get_quote --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 1' \
+    _has "$pool_ac")
   direct_out=$(printf '%s\n' "$direct_quote" | json_num amount_out)
   direct_expected=$(invoke "$pool_ac" get_amount_out --token_in "$ta" --amount_in "$amount_in" | parse_i128)
   assert_eq "dex_aggregator: one-hop quote equals the direct pool's quote" "$direct_out" "$direct_expected"
   assert_eq "dex_aggregator: one-hop route has one hop" \
-    "$(printf '%s\n' "$direct_quote" | count_matches '"pool_kind"')" "1"
+    '@cmd:printf '\''%s\n'\'' "$direct_quote" | count_matches '\''"pool_kind"'\''' "1"
   assert_contains "dex_aggregator: one-hop route uses pool A/C" "$direct_quote" "$pool_ac"
 
   # ── two-hop quote: the deeper route through B must win ──────────────────
   local best_quote best_out hop0 hop1
-  best_quote=$(invoke "$agg" get_quote \
-    --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 2)
+  # The routing token was registered a moment ago; wait until the two-hop
+  # route through pool A/B is what the aggregator reports.
+  best_quote=$(e2e_read_until "dex_aggregator: two-hop quote" \
+    'invoke "$agg" get_quote --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 2' \
+    _has "$pool_ab")
   best_out=$(printf '%s\n' "$best_quote" | json_num amount_out)
   hop0=$(invoke "$pool_ab" get_amount_out --token_in "$ta" --amount_in "$amount_in" | parse_i128)
   hop1=$(invoke "$pool_bc" get_amount_out --token_in "$tb" --amount_in "$hop0" | parse_i128)
   assert_gt "dex_aggregator: two-hop route beats the shallow direct pool" "$best_out" "$direct_out"
   assert_eq "dex_aggregator: best quote equals chained pool quotes" "$best_out" "$hop1"
   assert_eq "dex_aggregator: best route has two hops" \
-    "$(printf '%s\n' "$best_quote" | count_matches '"pool_kind"')" "2"
+    '@cmd:printf '\''%s\n'\'' "$best_quote" | count_matches '\''"pool_kind"'\''' "2"
   assert_contains "dex_aggregator: best route enters through pool A/B" "$best_quote" "$pool_ab"
   assert_contains "dex_aggregator: best route exits through pool B/C" "$best_quote" "$pool_bc"
   assert_not_contains "dex_aggregator: best route skips pool A/C" "$best_quote" "$pool_ac"
 
   # ── swap_best executes the quoted route ─────────────────────────────────
-  invoke "$ta" mint --to "$trader" --amount "$(( amount_in * 2 ))" >/dev/null
-
+  # A balance read right after the mint can come from a node a ledger behind,
+  # so take the baseline before it and derive the post-mint figure.
   local a0 b0 c0 deadline out
   a0=$(balance_of "$ta" "$trader")
   b0=$(balance_of "$tb" "$trader")
   c0=$(balance_of "$tc" "$trader")
+  invoke "$ta" mint --to "$trader" --amount "$(( amount_in * 2 ))" >/dev/null
+  a0=$(( a0 + amount_in * 2 ))
+  assert_eq "dex_aggregator: mint credited to the trader" '@cmd:balance_of "$ta" "$trader"' "$a0"
   deadline=$(( $(date +%s) + 300 ))
 
   expect_fail "dex_aggregator: swap_best below min_out is rejected" \
@@ -93,24 +100,22 @@ run_dex_aggregator_flow() {
     --min_out "$best_out" \
     --deadline "$deadline" | parse_i128)
   assert_eq "dex_aggregator: swap_best output matches the quote" "$out" "$best_out"
-  assert_eq "dex_aggregator: token A debited by amount_in" "$(balance_of "$ta" "$trader")" "$(( a0 - amount_in ))"
-  assert_eq "dex_aggregator: token C credited by the output" "$(balance_of "$tc" "$trader")" "$(( c0 + out ))"
-  assert_eq "dex_aggregator: intermediate token B nets to zero" "$(balance_of "$tb" "$trader")" "$b0"
+  assert_eq "dex_aggregator: token A debited by amount_in" '@cmd:balance_of "$ta" "$trader"' "$(( a0 - amount_in ))"
+  assert_eq "dex_aggregator: token C credited by the output" '@cmd:balance_of "$tc" "$trader"' "$(( c0 + out ))"
+  assert_eq "dex_aggregator: intermediate token B nets to zero" '@cmd:balance_of "$tb" "$trader"' "$b0"
 
   # ── pause: quotes stay callable, execution halts ────────────────────────
   invoke "$agg" pause --admin "$trader" >/dev/null
-  assert_eq "dex_aggregator: is_paused after pause" "$(invoke "$agg" is_paused)" "true"
-  local paused_quote
-  paused_quote=$(invoke "$agg" get_quote \
-    --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 2 | json_num amount_out)
-  assert_gt "dex_aggregator: get_quote still answers while paused" "$paused_quote" 0
+  assert_eq "dex_aggregator: is_paused after pause" '@cmd:invoke "$agg" is_paused' "true"
+  assert_gt "dex_aggregator: get_quote still answers while paused" \
+    '@cmd:invoke "$agg" get_quote --token_in "$ta" --token_out "$tc" --amount_in "$amount_in" --max_hops 2 | json_num amount_out' 0
   deadline=$(( $(date +%s) + 300 ))
   expect_fail "dex_aggregator: swap_best is rejected while paused" \
     invoke "$agg" swap_best \
       --trader "$trader" --token_in "$ta" --token_out "$tc" \
       --amount_in "$amount_in" --min_out 0 --deadline "$deadline"
   invoke "$agg" unpause --admin "$trader" >/dev/null
-  assert_eq "dex_aggregator: is_paused after unpause" "$(invoke "$agg" is_paused)" "false"
+  assert_eq "dex_aggregator: is_paused after unpause" '@cmd:invoke "$agg" is_paused' "false"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

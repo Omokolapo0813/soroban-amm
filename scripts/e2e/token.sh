@@ -28,11 +28,11 @@ run_token_flow() {
     --decimals 7 >/dev/null
   pass "token: deployed and initialized $token"
 
-  assert_contains "token: name reads back" "$(invoke "$token" name)" "E2E Token"
-  assert_contains "token: symbol reads back" "$(invoke "$token" symbol)" "E2ETK"
-  assert_eq "token: decimals" "$(invoke "$token" decimals | parse_i128)" "7"
-  assert_eq "token: admin is the initializer" "$(invoke "$token" admin | parse_address)" "$admin"
-  assert_eq "token: total_supply starts at zero" "$(invoke "$token" total_supply | parse_i128)" "0"
+  assert_contains "token: name reads back" '@cmd:invoke "$token" name' "E2E Token"
+  assert_contains "token: symbol reads back" '@cmd:invoke "$token" symbol' "E2ETK"
+  assert_eq "token: decimals" '@cmd:invoke "$token" decimals | parse_i128' "7"
+  assert_eq "token: admin is the initializer" '@cmd:invoke "$token" admin | parse_address' "$admin"
+  assert_eq "token: total_supply starts at zero" '@cmd:invoke "$token" total_supply | parse_i128' "0"
 
   expect_fail "token: second initialize is rejected" \
     invoke "$token" initialize --admin "$spender" --name "Hijack" --symbol "HJK" --decimals 7
@@ -40,8 +40,8 @@ run_token_flow() {
   # ── mint (admin-only) ───────────────────────────────────────────────────
   local minted=1000000
   invoke "$token" mint --to "$admin" --amount "$minted" >/dev/null
-  assert_eq "token: admin balance after mint" "$(balance_of "$token" "$admin")" "$minted"
-  assert_eq "token: total_supply after mint" "$(invoke "$token" total_supply | parse_i128)" "$minted"
+  assert_eq "token: admin balance after mint" '@cmd:balance_of "$token" "$admin"' "$minted"
+  assert_eq "token: total_supply after mint" '@cmd:invoke "$token" total_supply | parse_i128' "$minted"
 
   expect_fail "token: mint by a non-admin is rejected" \
     invoke_signed_only_by "$spender_key" "$token" mint --to "$spender" --amount 1
@@ -49,8 +49,8 @@ run_token_flow() {
   # ── transfer ────────────────────────────────────────────────────────────
   local sent=250000
   invoke "$token" transfer --from "$admin" --to "$recipient" --amount "$sent" >/dev/null
-  assert_eq "token: sender balance after transfer" "$(balance_of "$token" "$admin")" "$(( minted - sent ))"
-  assert_eq "token: recipient balance after transfer" "$(balance_of "$token" "$recipient")" "$sent"
+  assert_eq "token: sender balance after transfer" '@cmd:balance_of "$token" "$admin"' "$(( minted - sent ))"
+  assert_eq "token: recipient balance after transfer" '@cmd:balance_of "$token" "$recipient"' "$sent"
 
   expect_fail "token: transfer beyond balance is rejected" \
     invoke "$token" transfer --from "$admin" --to "$recipient" --amount "$(( minted * 10 ))"
@@ -65,7 +65,7 @@ run_token_flow() {
     --amount "$approved" \
     --live_until_ledger 4000000000 >/dev/null
   assert_eq "token: allowance reads back approved amount" \
-    "$(invoke "$token" allowance --from "$admin" --spender "$spender" | json_num amount)" "$approved"
+    '@cmd:invoke "$token" allowance --from "$admin" --spender "$spender" | json_num amount' "$approved"
 
   # ── transfer_from (spender signs) ───────────────────────────────────────
   local pulled=60000
@@ -75,11 +75,11 @@ run_token_flow() {
     --to "$recipient" \
     --amount "$pulled" >/dev/null
   assert_eq "token: allowance decremented by transfer_from" \
-    "$(invoke "$token" allowance --from "$admin" --spender "$spender" | json_num amount)" "$(( approved - pulled ))"
+    '@cmd:invoke "$token" allowance --from "$admin" --spender "$spender" | json_num amount' "$(( approved - pulled ))"
   assert_eq "token: owner balance after transfer_from" \
-    "$(balance_of "$token" "$admin")" "$(( minted - sent - pulled ))"
+    '@cmd:balance_of "$token" "$admin"' "$(( minted - sent - pulled ))"
   assert_eq "token: recipient balance after transfer_from" \
-    "$(balance_of "$token" "$recipient")" "$(( sent + pulled ))"
+    '@cmd:balance_of "$token" "$recipient"' "$(( sent + pulled ))"
 
   expect_fail "token: transfer_from beyond the remaining allowance is rejected" \
     invoke_as "$spender_key" "$token" transfer_from \
@@ -89,14 +89,15 @@ run_token_flow() {
   local burned=50000
   invoke "$token" burn --from "$recipient" --amount "$burned" >/dev/null
   assert_eq "token: recipient balance after burn" \
-    "$(balance_of "$token" "$recipient")" "$(( sent + pulled - burned ))"
+    '@cmd:balance_of "$token" "$recipient"' "$(( sent + pulled - burned ))"
   assert_eq "token: total_supply reduced by burn" \
-    "$(invoke "$token" total_supply | parse_i128)" "$(( minted - burned ))"
+    '@cmd:invoke "$token" total_supply | parse_i128' "$(( minted - burned ))"
 
   # ── conservation: supply equals the sum of every holder's balance ───────
   local sum
   sum=$(( $(balance_of "$token" "$admin") + $(balance_of "$token" "$recipient") + $(balance_of "$token" "$spender") ))
-  assert_eq "token: total_supply equals sum of balances" "$sum" "$(invoke "$token" total_supply | parse_i128)"
+  assert_eq "token: total_supply equals sum of balances" \
+    '@cmd:invoke "$token" total_supply | parse_i128' "$sum"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

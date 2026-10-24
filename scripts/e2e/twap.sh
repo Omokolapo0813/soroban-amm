@@ -24,9 +24,8 @@ run_twap_flow() {
   fi
   local window="${TWAP_WINDOW_SECS:-60}"
   local amount=1000000
-  local keeper
-  keeper=$(invoke "$TWAP_CONSUMER_CONTRACT_ID" get_keeper | extract_account_id)
-  assert_eq "twap: consumer keeper is this account" "$keeper" "$SOURCE_PUBLIC_KEY"
+  assert_eq "twap: consumer keeper is this account" \
+    '@cmd:invoke "$TWAP_CONSUMER_CONTRACT_ID" get_keeper | extract_account_id' "$SOURCE_PUBLIC_KEY"
 
   # The pool needs liquidity for its price accumulators to move.
   invoke "$TOKEN_A_CONTRACT_ID" mint --to "$SOURCE_PUBLIC_KEY" --amount "$(( amount * 2 ))" >/dev/null
@@ -43,7 +42,11 @@ run_twap_flow() {
   local count_before count_after
   count_before=$(invoke "$TWAP_CONSUMER_CONTRACT_ID" get_snapshot_count --pool "$AMM_CONTRACT_ID" | parse_i128)
   invoke "$TWAP_CONSUMER_CONTRACT_ID" save_snapshot --pool "$AMM_CONTRACT_ID" >/dev/null
-  count_after=$(invoke "$TWAP_CONSUMER_CONTRACT_ID" get_snapshot_count --pool "$AMM_CONTRACT_ID" | parse_i128)
+  # A same-ledger save overwrites, so the count may stay put; it must not
+  # drop, and must be at least 1.
+  count_after=$(e2e_read_until "twap: snapshot count after save" \
+    'invoke "$TWAP_CONSUMER_CONTRACT_ID" get_snapshot_count --pool "$AMM_CONTRACT_ID" | parse_i128' \
+    _is_ge "$(( count_before > 1 ? count_before : 1 ))")
   if (( count_after < 1 || count_after < count_before )); then
     die "twap: save_snapshot applied but snapshot count went from $count_before to $count_after"
   fi
@@ -54,7 +57,8 @@ run_twap_flow() {
     twal="$TWAL_CONSUMER_CONTRACT_ID"
     invoke "$twal" save_snapshot --pool "$AMM_CONTRACT_ID" >/dev/null
     local twal_count
-    twal_count=$(invoke "$twal" get_snapshot_count --pool "$AMM_CONTRACT_ID" | parse_i128)
+    twal_count=$(e2e_read_until "twap: TWAL snapshot count" \
+      'invoke "$twal" get_snapshot_count --pool "$AMM_CONTRACT_ID" | parse_i128' _is_gt 0)
     if (( twal_count < 1 )); then
       die "twap: TWAL save_snapshot applied but no snapshot is stored"
     fi
@@ -74,8 +78,9 @@ run_twap_flow() {
 
   # ── read over the window ──────────────────────────────────────────────────
   local twap_price
-  twap_price=$(invoke "$TWAP_CONSUMER_CONTRACT_ID" get_twap_price \
-    --pool "$AMM_CONTRACT_ID" --window_seconds "$window" | parse_i128)
+  twap_price=$(e2e_read_until "twap: get_twap_price" \
+    'invoke "$TWAP_CONSUMER_CONTRACT_ID" get_twap_price --pool "$AMM_CONTRACT_ID" --window_seconds "$window" | parse_i128' \
+    _is_gt 0)
   if [[ -z "$twap_price" ]] || (( twap_price <= 0 )); then
     die "twap: get_twap_price over ${window}s returned '${twap_price}', expected a positive price"
   fi
@@ -83,8 +88,9 @@ run_twap_flow() {
 
   if [[ -n "$twal" ]]; then
     local twal_value
-    twal_value=$(invoke "$twal" get_twal_liquidity \
-      --pool "$AMM_CONTRACT_ID" --window_seconds "$window" | parse_i128)
+    twal_value=$(e2e_read_until "twap: get_twal_liquidity" \
+      'invoke "$twal" get_twal_liquidity --pool "$AMM_CONTRACT_ID" --window_seconds "$window" | parse_i128' \
+      _is_gt 0)
     if [[ -z "$twal_value" ]] || (( twal_value <= 0 )); then
       die "twap: get_twal_liquidity over ${window}s returned '${twal_value}', expected positive liquidity"
     fi

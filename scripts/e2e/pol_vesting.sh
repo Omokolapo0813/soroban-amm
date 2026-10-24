@@ -40,14 +40,15 @@ run_pol_vesting_flow() {
   tx=$(e2e_new_token VTA)
   ty=$(e2e_new_token VTB)
   pool=$(e2e_new_seeded_pool "$factory" "$tx" "$ty" "$(( total * 2 ))")
-  lp=$(invoke "$factory" get_lp_token --pool "$pool" | extract_contract_id)
+  lp=$(e2e_read_until "pol_vesting: get_lp_token" \
+    'invoke "$factory" get_lp_token --pool "$pool" | extract_contract_id' _nonempty)
   if [[ -z "$lp" ]]; then
     die "pol_vesting: factory returned no LP token for the seeded pool"
   fi
   vest=$(e2e_deploy pol_vesting)
   invoke "$vest" initialize --governance "$governance" --treasury "$treasury" >/dev/null
-  assert_eq "pol_vesting: governance reads back" "$(invoke "$vest" get_governance | parse_address)" "$governance"
-  assert_eq "pol_vesting: treasury reads back" "$(invoke "$vest" get_treasury | parse_address)" "$treasury"
+  assert_eq "pol_vesting: governance reads back" '@cmd:invoke "$vest" get_governance | parse_address' "$governance"
+  assert_eq "pol_vesting: treasury reads back" '@cmd:invoke "$vest" get_treasury | parse_address' "$treasury"
   expect_fail "pol_vesting: second initialize is rejected" \
     invoke "$vest" initialize --governance "$outsider" --treasury "$outsider"
 
@@ -84,9 +85,9 @@ run_pol_vesting_flow() {
 
   local schedule
   schedule=$(invoke "$vest" get_vesting --beneficiary "$beneficiary" --schedule_id "$schedule_id")
-  assert_eq "pol_vesting: schedule total reads back" "$(printf '%s\n' "$schedule" | json_num total)" "$total"
-  assert_eq "pol_vesting: schedule starts unreleased" "$(printf '%s\n' "$schedule" | json_num released)" "0"
-  assert_eq "pol_vesting: schedule end_ledger reads back" "$(printf '%s\n' "$schedule" | json_num end_ledger)" "$end_ledger"
+  assert_eq "pol_vesting: schedule total reads back" '@cmd:printf '\''%s\n'\'' "$schedule" | json_num total' "$total"
+  assert_eq "pol_vesting: schedule starts unreleased" '@cmd:printf '\''%s\n'\'' "$schedule" | json_num released' "0"
+  assert_eq "pol_vesting: schedule end_ledger reads back" '@cmd:printf '\''%s\n'\'' "$schedule" | json_num end_ledger' "$end_ledger"
 
   # ── release: a strictly partial amount has vested ───────────────────────
   local bal0 released

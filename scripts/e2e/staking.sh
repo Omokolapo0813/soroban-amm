@@ -31,6 +31,11 @@ run_staking_flow() {
   invoke "$(pool_token "$AMM_POOL_CONTRACT_ID" token_a)" mint --to "$staker" --amount "$amount_a" >/dev/null
   invoke "$(pool_token "$AMM_POOL_CONTRACT_ID" token_b)" mint --to "$staker" --amount "$amount_b" >/dev/null
 
+  # Read before the deposit so the post-deposit balance can be derived, not
+  # re-read from a node that may not have the deposit yet.
+  local lp_balance_pre
+  lp_balance_pre=$(invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128)
+
   local deadline add_output lp_shares
   deadline=$(( $(date +%s) + 300 ))
   add_output=$(invoke "$AMM_POOL_CONTRACT_ID" add_liquidity \
@@ -43,16 +48,15 @@ run_staking_flow() {
   assert_gt "staking: obtained LP shares to stake" "$lp_shares" 0
 
   # ── stake (no lock, 1x boost) ────────────────────────────────────────────
-  local lp_balance_before
-  lp_balance_before=$(invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128)
+  local lp_balance_before=$(( lp_balance_pre + lp_shares ))
+  assert_eq "staking: LP balance holds the new shares" \
+    '@cmd:invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128' "$lp_balance_before"
 
   invoke "$STAKING_CONTRACT_ID" stake --staker "$staker" --amount "$lp_shares" >/dev/null
   pass "staking: staked $lp_shares LP tokens"
 
-  local lp_balance_after_stake
-  lp_balance_after_stake=$(invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128)
   assert_eq "staking: LP balance decreased by staked amount" \
-    "$lp_balance_after_stake" "$(( lp_balance_before - lp_shares ))"
+    '@cmd:invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128' "$(( lp_balance_before - lp_shares ))"
 
   # ── add_rewards + update_rewards ─────────────────────────────────────────
   # add_rewards only deposits reward tokens into the pool's balance;
@@ -67,7 +71,8 @@ run_staking_flow() {
   pass "staking: distributed rewards across the pool"
 
   local pending
-  pending=$(invoke "$STAKING_CONTRACT_ID" pending_rewards --staker "$staker" | parse_i128)
+  pending=$(e2e_read_until "staking: pending_rewards" \
+    'invoke "$STAKING_CONTRACT_ID" pending_rewards --staker "$staker" | parse_i128' _is_gt 0)
   assert_gt "staking: pending_rewards accrued" "$pending" 0
 
   # ── claim ────────────────────────────────────────────────────────────────
@@ -78,10 +83,8 @@ run_staking_flow() {
   claimed=$(invoke "$STAKING_CONTRACT_ID" claim --staker "$staker" | parse_i128)
   assert_gt "staking: claim returned nonzero rewards" "$claimed" 0
 
-  local reward_balance_after
-  reward_balance_after=$(invoke "$REWARD_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128)
   assert_eq "staking: reward token balance increased by claimed amount" \
-    "$reward_balance_after" "$(( reward_balance_before + claimed ))"
+    '@cmd:invoke "$REWARD_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128' "$(( reward_balance_before + claimed ))"
 
   # ── unstake ──────────────────────────────────────────────────────────────
   # No lock was used (stake, not stake_locked), so unstake is available
@@ -89,8 +92,6 @@ run_staking_flow() {
   invoke "$STAKING_CONTRACT_ID" unstake --staker "$staker" --amount "$lp_shares" >/dev/null
   pass "staking: unstaked $lp_shares LP tokens"
 
-  local lp_balance_final
-  lp_balance_final=$(invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128)
   assert_eq "staking: LP balance round-trips back to pre-stake balance" \
-    "$lp_balance_final" "$lp_balance_before"
+    '@cmd:invoke "$LP_TOKEN_CONTRACT_ID" balance --id "$staker" | parse_i128' "$lp_balance_before"
 }

@@ -14,6 +14,11 @@
 #   bash scripts/e2e/oracle_aggregator.sh
 set -Eeuo pipefail
 
+# oracle_sources ORACLE PAIR_JSON - the registered sources for a pair.
+oracle_sources() {
+  invoke "$1" list_sources --pair "$2" --cursor 0 --limit 50
+}
+
 run_oracle_aggregator_flow() {
   CURRENT_FLOW="oracle_aggregator"
 
@@ -38,13 +43,13 @@ run_oracle_aggregator_flow() {
   expect_fail "oracle_aggregator: second initialize is rejected" \
     invoke "$oracle" initialize --admin "$admin" --max_staleness_seconds 3600
 
-  assert_eq "oracle_aggregator: get_admin reads back" "$(invoke "$oracle" get_admin | parse_address)" "$admin"
-  assert_eq "oracle_aggregator: max staleness reads back" "$(invoke "$oracle" get_max_staleness | parse_i128)" "3600"
+  assert_eq "oracle_aggregator: get_admin reads back" '@cmd:invoke "$oracle" get_admin | parse_address' "$admin"
+  assert_eq "oracle_aggregator: max staleness reads back" '@cmd:invoke "$oracle" get_max_staleness | parse_i128' "3600"
   assert_eq "oracle_aggregator: default deviation band is 500 bps" \
-    "$(invoke "$oracle" get_max_deviation_bps | parse_i128)" "500"
-  assert_eq "oracle_aggregator: starts unpaused" "$(invoke "$oracle" is_paused)" "false"
+    '@cmd:invoke "$oracle" get_max_deviation_bps | parse_i128' "500"
+  assert_eq "oracle_aggregator: starts unpaused" '@cmd:invoke "$oracle" is_paused' "false"
   assert_eq "oracle_aggregator: starts with no sources" \
-    "$(invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50 | count_matches '"source_contract"')" "0"
+    '@cmd:invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50 | count_matches '\''"source_contract"'\''' "0"
 
   # ── register_source ─────────────────────────────────────────────────────
   # source_type 2 = OracleSourceType::External.
@@ -53,12 +58,10 @@ run_oracle_aggregator_flow() {
   invoke "$oracle" register_source \
     --admin "$admin" --pair "$pair_json" --source_contract "$src2" --source_type 2 --weight 10000 >/dev/null
 
-  local sources
-  sources=$(invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50)
   assert_eq "oracle_aggregator: two sources registered" \
-    "$(printf '%s\n' "$sources" | count_matches '"source_contract"')" "2"
-  assert_contains "oracle_aggregator: source 1 listed" "$sources" "$src1"
-  assert_contains "oracle_aggregator: source 2 listed" "$sources" "$src2"
+    '@cmd:oracle_sources "$oracle" "$pair_json" | count_matches '\''"source_contract"'\''' "2"
+  assert_contains "oracle_aggregator: source 1 listed" '@cmd:oracle_sources "$oracle" "$pair_json"' "$src1"
+  assert_contains "oracle_aggregator: source 2 listed" '@cmd:oracle_sources "$oracle" "$pair_json"' "$src2"
 
   expect_fail "oracle_aggregator: duplicate source is rejected" \
     invoke "$oracle" register_source \
@@ -73,14 +76,14 @@ run_oracle_aggregator_flow() {
   # ── tune weight, staleness, deviation band ──────────────────────────────
   invoke "$oracle" set_source_weight --admin "$admin" --pair "$pair_json" --source_contract "$src2" --weight 25000 >/dev/null
   assert_eq "oracle_aggregator: updated weight reads back" \
-    "$(invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50 | count_matches '"weight":[[:space:]]*25000')" "1"
+    '@cmd:invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50 | count_matches '\''"weight":[[:space:]]*25000'\''' "1"
 
   invoke "$oracle" set_max_staleness --admin "$admin" --max_staleness_seconds 600 >/dev/null
-  assert_eq "oracle_aggregator: updated staleness reads back" "$(invoke "$oracle" get_max_staleness | parse_i128)" "600"
+  assert_eq "oracle_aggregator: updated staleness reads back" '@cmd:invoke "$oracle" get_max_staleness | parse_i128' "600"
 
   invoke "$oracle" set_max_deviation_bps --admin "$admin" --max_deviation_bps 250 >/dev/null
   assert_eq "oracle_aggregator: updated deviation band reads back" \
-    "$(invoke "$oracle" get_max_deviation_bps | parse_i128)" "250"
+    '@cmd:invoke "$oracle" get_max_deviation_bps | parse_i128' "250"
   expect_fail "oracle_aggregator: zero deviation band is rejected" \
     invoke "$oracle" set_max_deviation_bps --admin "$admin" --max_deviation_bps 0
 
@@ -90,26 +93,25 @@ run_oracle_aggregator_flow() {
 
   # ── pause ───────────────────────────────────────────────────────────────
   invoke "$oracle" pause --admin "$admin" >/dev/null
-  assert_eq "oracle_aggregator: is_paused after pause" "$(invoke "$oracle" is_paused)" "true"
+  assert_eq "oracle_aggregator: is_paused after pause" '@cmd:invoke "$oracle" is_paused' "true"
   expect_fail "oracle_aggregator: get_price is rejected while paused" \
     invoke "$oracle" get_price --token_a "$src1" --token_b "$src2"
   invoke "$oracle" unpause --admin "$admin" >/dev/null
-  assert_eq "oracle_aggregator: is_paused after unpause" "$(invoke "$oracle" is_paused)" "false"
+  assert_eq "oracle_aggregator: is_paused after unpause" '@cmd:invoke "$oracle" is_paused' "false"
 
   # ── remove_source ───────────────────────────────────────────────────────
   invoke "$oracle" remove_source --admin "$admin" --pair "$pair_json" --source_contract "$src1" --force true >/dev/null
-  sources=$(invoke "$oracle" list_sources --pair "$pair_json" --cursor 0 --limit 50)
   assert_eq "oracle_aggregator: one source left after removal" \
-    "$(printf '%s\n' "$sources" | count_matches '"source_contract"')" "1"
-  assert_not_contains "oracle_aggregator: removed source is gone" "$sources" "$src1"
+    '@cmd:oracle_sources "$oracle" "$pair_json" | count_matches '\''"source_contract"'\''' "1"
+  assert_not_contains "oracle_aggregator: removed source is gone" '@cmd:oracle_sources "$oracle" "$pair_json"' "$src1"
   expect_fail "oracle_aggregator: removing the last source is rejected" \
     invoke "$oracle" remove_source --admin "$admin" --pair "$pair_json" --source_contract "$src2" --force false
 
   # ── two-step admin handover ─────────────────────────────────────────────
   invoke "$oracle" propose_admin --current_admin "$admin" --new_admin "$new_admin" >/dev/null
-  assert_eq "oracle_aggregator: admin unchanged until accepted" "$(invoke "$oracle" get_admin | parse_address)" "$admin"
+  assert_eq "oracle_aggregator: admin unchanged until accepted" '@cmd:invoke "$oracle" get_admin | parse_address' "$admin"
   invoke_as "$new_admin_key" "$oracle" accept_admin --new_admin "$new_admin" >/dev/null
-  assert_eq "oracle_aggregator: admin rotated after accept" "$(invoke "$oracle" get_admin | parse_address)" "$new_admin"
+  assert_eq "oracle_aggregator: admin rotated after accept" '@cmd:invoke "$oracle" get_admin | parse_address' "$new_admin"
   expect_fail "oracle_aggregator: former admin loses admin rights" \
     invoke "$oracle" set_max_staleness --admin "$admin" --max_staleness_seconds 900
 }
