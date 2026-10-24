@@ -199,7 +199,7 @@ Overall, LPs can adopt the following strategies to manage risk:
 
 ## 5. Admin Key Management
 
-The pool admin can pause the pool, update fees, set the protocol fee, and initiate contract upgrades. Compromise of the admin key is a critical security event.
+The pool admin can pause the pool (pause stops swaps, deposits and flash loans; withdrawals remain open), update fees, set the protocol fee, and initiate contract upgrades. Compromise of the admin key is a critical security event.
 
 **Best practices:**
 

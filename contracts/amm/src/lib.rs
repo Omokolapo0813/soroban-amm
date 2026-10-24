@@ -6,6 +6,12 @@
 //!   3. First LP calls `add_liquidity` to seed the pool.
 //!   4. Traders call `swap` to exchange tokens.
 //!   5. LPs call `remove_liquidity` to redeem their share.
+//!
+//! # Pausing policy
+//! When paused (via `pause` or circuit breaker trip), swaps, deposits
+//! (`add_liquidity`, `add_liquidity_fot`), and `flash_loan` are blocked.
+//! Liquidity withdrawals (`remove_liquidity` and `remove_liquidity_one_sided`)
+//! remain open so LP funds are never trapped.
 
 #![no_std]
 
@@ -2098,9 +2104,7 @@ impl AmmPool {
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
-        if Self::is_paused(env.clone()) {
-            return Err(AmmError::Paused);
-        }
+        // No pause guard -- LPs must always be able to exit.
         // Acquire the reentrancy lock for the duration of this call; a
         // reentrant call arriving via a token/receiver callback is rejected
         // here with `Reentrant`, and the lock is released automatically
@@ -2186,7 +2190,6 @@ impl AmmPool {
     /// - If `provider` owns fewer shares than `shares`.
     /// - If `token_out` is not one of the two pool tokens.
     /// - If the computed output would be less than `min_out`.
-    /// - If the pool is paused.
     #[allow(clippy::too_many_arguments)]
     pub fn remove_liquidity_one_sided(
         env: Env,
@@ -2203,9 +2206,7 @@ impl AmmPool {
         if deadline < env.ledger().timestamp() {
             return Err(AmmError::DeadlineExceeded);
         }
-        if Self::is_paused(env.clone()) {
-            return Err(AmmError::Paused);
-        }
+        // No pause guard -- LPs must always be able to exit.
         // Acquire the reentrancy lock for the duration of this call; a
         // reentrant call arriving via a token/receiver callback is rejected
         // here with `Reentrant`, and the lock is released automatically

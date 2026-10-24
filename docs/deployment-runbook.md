@@ -712,6 +712,7 @@ rejection of a non-admin caller.
 ### 6.1 Pausing a pool
 
 ```sh
+# Anyone with admin auth can pause — pause stops swaps, deposits and flash loans; withdrawals remain open.
 # The stored admin authorizes the call; pause takes no contract arguments.
 stellar contract invoke --id $AMM_POOL_CONTRACT_ID --network $NETWORK --source $ADMIN_KEY -- pause
 # Check:

@@ -496,8 +496,7 @@ fn test_swap_panics_when_paused() {
 }
 
 #[test]
-#[should_panic]
-fn test_remove_liquidity_panics_when_paused() {
+fn test_remove_liquidity_succeeds_when_paused() {
     let (env, admin, amm_addr, lp_addr, _) = setup();
     let (ta_client, ta_sac) = create_sac(&env, &admin);
     let (tb_client, tb_sac) = create_sac(&env, &admin);
@@ -518,9 +517,9 @@ fn test_remove_liquidity_panics_when_paused() {
     let shares = AddLiquidity::new(&amm, &provider, 1_000_000, 1_000_000).execute();
 
     amm.pause();
-    RemoveLiquidity::new(&amm, &provider, shares).execute();
+    let (out_a, out_b) = RemoveLiquidity::new(&amm, &provider, shares).execute();
+    assert!(out_a > 0 && out_b > 0);
 }
-
 #[test]
 fn test_protocol_fee_accrual() {
     let (env, admin, amm_addr, lp_addr, _) = setup();
