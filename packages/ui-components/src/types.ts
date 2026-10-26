@@ -72,7 +72,10 @@ export interface BaseProps {
 
 // ─── Governance types ─────────────────────────────────────────────────────────
 
-export type ProposalStatus = "active" | "passed" | "failed" | "pending";
+/** Mirrors contracts/governance::ProposalStatus. */
+export type ProposalStatus =
+  | "active" | "pending" | "queued" | "executed" | "defeated"
+  | "expired" | "cancelled" | "inDiscussion" | "vetoed";
 export type ProposalCategory = "protocol" | "treasury" | "params" | "meta" | "other";
 export type VoteChoice = "for" | "against" | "abstain";
 
@@ -92,6 +95,14 @@ export interface Proposal {
   body: string;
   forVotes: number;
   againstVotes: number;
+  /** Abstain votes count toward quorum, but not toward the majority. */
+  abstainVotes?: number;
+  /** Snapshot values from the contract, in total supply units and basis points. */
+  snapshotTotalSupply?: number;
+  quorumBps?: number;
+  /** Contract ledger timestamps. */
+  executeAfter?: number;
+  expiresAt?: number;
   /** Minimum participation as % of circulating supply. */
   quorumPct: number;
   /** ISO date string (YYYY-MM-DD). */
