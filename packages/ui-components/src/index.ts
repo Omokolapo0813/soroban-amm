@@ -50,6 +50,6 @@ export type {
   Delegate,
 } from "./types.js";
 
-export { GovernanceForum } from "./GovernanceForum.js";
+export { GovernanceForum, demoProposals } from "./GovernanceForum.js";
 export type { GovernanceForumProps } from "./GovernanceForum.js";
 

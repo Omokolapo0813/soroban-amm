@@ -25,11 +25,11 @@ import React, {
   useCallback,
   type KeyboardEvent,
 } from "react";
-import type { BaseProps } from "./types.js";
+import type { BaseProps, ProposalStatus } from "./types.js";
 
 // ─── Domain types ────────────────────────────────────────────────────────────
 
-export type ProposalStatus = "active" | "passed" | "failed" | "pending";
+export type { ProposalStatus } from "./types.js";
 export type ProposalCategory = "protocol" | "treasury" | "params" | "meta" | "other";
 export type VoteChoice = "for" | "against" | "abstain";
 
@@ -48,6 +48,11 @@ export interface Proposal {
   body: string;
   forVotes: number;
   againstVotes: number;
+  abstainVotes?: number;
+  snapshotTotalSupply?: number;
+  quorumBps?: number;
+  executeAfter?: number;
+  expiresAt?: number;
   /** Quorum as percentage of circulating supply required for the vote to be valid. */
   quorumPct: number;
   /** ISO date string */
@@ -91,7 +96,7 @@ export interface GovernanceForumProps extends BaseProps {
 
 // ─── Default seed data ────────────────────────────────────────────────────────
 
-const DEFAULT_PROPOSALS: Proposal[] = [
+export const demoProposals: Proposal[] = [
   {
     id: "GIP-012",
     title: "Increase max pool fee to 1.5%",
@@ -140,7 +145,7 @@ const DEFAULT_PROPOSALS: Proposal[] = [
     id: "GIP-009",
     title: "Reduce protocol fee to 0.05%",
     category: "params",
-    status: "passed",
+    status: "executed",
     summary: "Lower the base protocol fee from 0.10% to 0.05% to improve competitiveness.",
     body: "Analysis shows fee reduction increases volume by ~30% based on elasticity modelling.",
     forVotes: 16_800_000,
@@ -154,7 +159,7 @@ const DEFAULT_PROPOSALS: Proposal[] = [
     id: "GIP-008",
     title: "Emergency pause of XYZ/USDC pool",
     category: "protocol",
-    status: "failed",
+    status: "defeated",
     summary: "Temporarily pause the XYZ/USDC pool due to oracle manipulation risk.",
     body: "Insufficient consensus was reached before the risk window closed.",
     forVotes: 4_500_000,
@@ -244,34 +249,49 @@ const S: Record<string, React.CSSProperties> = {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function VoteBar({ forVotes, againstVotes }: { forVotes: number; againstVotes: number }) {
-  const total = forVotes + againstVotes;
+function quorumProgress(proposal: Proposal): { votes: number; required: number; met: boolean } | null {
+  if (proposal.snapshotTotalSupply === undefined || proposal.quorumBps === undefined) return null;
+  const votes = proposal.forVotes + proposal.againstVotes + (proposal.abstainVotes ?? 0);
+  const required = proposal.snapshotTotalSupply * proposal.quorumBps / 10_000;
+  return { votes, required, met: votes >= required };
+}
+
+function VoteBar({ forVotes, againstVotes, abstainVotes = 0 }: { forVotes: number; againstVotes: number; abstainVotes?: number }) {
+  const total = forVotes + againstVotes + abstainVotes;
   const forPct = total ? Math.round((forVotes / total) * 100) : 0;
-  const againstPct = 100 - forPct;
+  const againstPct = total ? Math.round((againstVotes / total) * 100) : 0;
+  const abstainPct = Math.max(0, 100 - forPct - againstPct);
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: ".75rem", marginBottom: ".3rem" }}>
         <span style={{ color: T.accent2 }}>✓ {fmtNum(forVotes)} ({forPct}%)</span>
         <span style={{ color: T.danger }}>✗ {fmtNum(againstVotes)} ({againstPct}%)</span>
+        <span style={{ color: T.muted }}>◦ {fmtNum(abstainVotes)} abstain ({abstainPct}%)</span>
       </div>
       <div style={{ height: 6, borderRadius: 3, background: "rgba(255,255,255,.08)", position: "relative", overflow: "hidden" }}
-           role="img" aria-label={`Voting: ${forPct}% for, ${againstPct}% against`}>
+           role="img" aria-label={`Voting: ${forPct}% for, ${againstPct}% against, ${abstainPct}% abstain`}>
         <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${forPct}%`, background: `linear-gradient(90deg,${T.accent2},${T.accent})`, borderRadius: 3 }} />
-        <div style={{ position: "absolute", right: 0, top: 0, height: "100%", width: `${againstPct}%`, background: T.danger, borderRadius: 3 }} />
+        <div style={{ position: "absolute", left: `${forPct}%`, top: 0, height: "100%", width: `${againstPct}%`, background: T.danger }} />
+        <div style={{ position: "absolute", right: 0, top: 0, height: "100%", width: `${abstainPct}%`, background: T.muted, borderRadius: 3 }} />
       </div>
     </div>
   );
 }
 
 function StatusBadge({ status }: { status: ProposalStatus }) {
-  const map: Record<ProposalStatus, { bg: string; color: string }> = {
-    active:  { bg: "rgba(0,212,170,.15)",   color: T.accent2 },
-    passed:  { bg: "rgba(108,99,255,.15)",  color: T.accent  },
-    failed:  { bg: "rgba(240,78,78,.15)",   color: T.danger  },
-    pending: { bg: "rgba(244,169,59,.15)",  color: T.warn    },
+  const map: Record<ProposalStatus, { bg: string; color: string; label: string }> = {
+    active: { bg: "rgba(0,212,170,.15)", color: T.accent2, label: "Active" },
+    pending: { bg: "rgba(244,169,59,.15)", color: T.warn, label: "Pending · timelock" },
+    queued: { bg: "rgba(108,99,255,.15)", color: T.accent, label: "Queued" },
+    executed: { bg: "rgba(0,212,170,.15)", color: T.accent2, label: "Executed" },
+    defeated: { bg: "rgba(240,78,78,.15)", color: T.danger, label: "Defeated" },
+    expired: { bg: "rgba(240,78,78,.15)", color: T.danger, label: "Expired" },
+    cancelled: { bg: "rgba(255,255,255,.08)", color: T.muted, label: "Cancelled" },
+    inDiscussion: { bg: "rgba(244,169,59,.15)", color: T.warn, label: "In discussion" },
+    vetoed: { bg: "rgba(240,78,78,.15)", color: T.danger, label: "Vetoed" },
   };
-  const { bg, color } = map[status];
-  return <span style={{ ...S.badge, background: bg, color }}>{status}</span>;
+  const { bg, color, label } = map[status];
+  return <span style={{ ...S.badge, background: bg, color }}>{label}</span>;
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
@@ -313,9 +333,6 @@ function ProposalModal({
   const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => { if (e.target === e.currentTarget) onClose(); };
 
   if (!proposal) return null;
-  const total = proposal.forVotes + proposal.againstVotes;
-  const forPct = total ? Math.round((proposal.forVotes / total) * 100) : 0;
-
   return (
     <div style={S.overlay} role="dialog" aria-modal="true" aria-labelledby="modal-title"
          onClick={handleOverlayClick} onKeyDown={handleOverlayKey}>
@@ -340,15 +357,11 @@ function ProposalModal({
 
         <section style={{ marginBottom: "1.5rem" }}>
           <h3 style={{ fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".08em", color: T.muted, marginBottom: ".75rem" }}>Voting Progress</h3>
-          <div style={{ height: 10, borderRadius: 5, background: "rgba(255,255,255,.08)", overflow: "hidden", marginBottom: ".5rem", position: "relative" }}>
-            <div style={{ position: "absolute", left: 0, top: 0, height: "100%", width: `${forPct}%`, background: `linear-gradient(90deg,${T.accent2},${T.accent})`, borderRadius: 5 }} />
-            <div style={{ position: "absolute", right: 0, top: 0, height: "100%", width: `${100 - forPct}%`, background: T.danger, borderRadius: 5 }} />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: ".8rem" }}>
-            <span style={{ color: T.accent2 }}>✓ For: <strong>{fmtNum(proposal.forVotes)}</strong></span>
-            <span>Quorum: <strong>{proposal.quorumPct}%</strong></span>
-            <span style={{ color: T.danger }}>✗ Against: <strong>{fmtNum(proposal.againstVotes)}</strong></span>
-          </div>
+          <VoteBar forVotes={proposal.forVotes} againstVotes={proposal.againstVotes} abstainVotes={proposal.abstainVotes} />
+          {(() => {
+            const quorum = quorumProgress(proposal);
+            return quorum && <p aria-label="Quorum progress">Quorum {quorum.met ? "met" : "not met"}: {fmtNum(quorum.votes)} of {fmtNum(quorum.required)}</p>;
+          })()}
         </section>
 
         {proposal.status === "active" && (
@@ -389,7 +402,7 @@ function ProposalModal({
 
 // ─── Voting Power Calculator ─────────────────────────────────────────────────
 
-function VotingPowerCalc({ totalSupply }: { totalSupply: number }) {
+function VotingPowerCalc({ totalSupply }: { totalSupply?: number }) {
   const [tokens, setTokens] = useState(10000);
   const [lockedPct, setLockedPct] = useState(30);
   const [delegated, setDelegated] = useState(0);
@@ -399,8 +412,8 @@ function VotingPowerCalc({ totalSupply }: { totalSupply: number }) {
   const base    = (tokens - locked) + locked * lockMult;
   const bonus   = locked * (lockMult - 1);
   const total   = Math.round(base + delegated);
-  const share   = ((total / totalSupply) * 100).toFixed(3);
-  const pct     = Math.min(total / (totalSupply * 0.05), 1);
+  const share   = totalSupply ? ((total / totalSupply) * 100).toFixed(3) : null;
+  const pct     = totalSupply ? Math.min(total / (totalSupply * 0.05), 1) : 0;
   const circ    = 314;
   const offset  = circ * (1 - pct);
 
@@ -473,8 +486,7 @@ function VotingPowerCalc({ totalSupply }: { totalSupply: number }) {
           ))}
         </div>
         <div style={{ width: "100%", marginTop: ".75rem", padding: ".75rem", background: "rgba(255,255,255,.03)", borderRadius: 8, fontSize: ".78rem", color: T.muted, textAlign: "left" }}>
-          Supply: <strong style={{ color: T.text }}>{fmtNum(totalSupply)}</strong>&nbsp;&nbsp;
-          Your share: <strong style={{ color: T.accent2 }}>{share}%</strong>
+          {totalSupply === undefined ? "Supply data unavailable." : <>Supply: <strong style={{ color: T.text }}>{fmtNum(totalSupply)}</strong>&nbsp;&nbsp;Your share: <strong style={{ color: T.accent2 }}>{share}%</strong></>}
         </div>
       </div>
     </div>
@@ -483,12 +495,9 @@ function VotingPowerCalc({ totalSupply }: { totalSupply: number }) {
 
 // ─── Analytics ───────────────────────────────────────────────────────────────
 
-const participationData = [8.2, 14.1, 11.6, 9.4, 17.3, 12.8, 10.1, 15.9];
-
 function Analytics({ proposals }: { proposals: Proposal[] }) {
-  const maxP = Math.max(...participationData);
-
-  const outcomeCounts = { passed: 0, failed: 0, active: 0, pending: 0 } as Record<ProposalStatus, number>;
+  const statuses: ProposalStatus[] = ["active", "pending", "queued", "executed", "defeated", "expired", "cancelled", "inDiscussion", "vetoed"];
+  const outcomeCounts = Object.fromEntries(statuses.map(status => [status, 0])) as Record<ProposalStatus, number>;
   const catCounts: Record<string, number> = {};
   proposals.forEach(p => {
     outcomeCounts[p.status] = (outcomeCounts[p.status] || 0) + 1;
@@ -501,29 +510,12 @@ function Analytics({ proposals }: { proposals: Proposal[] }) {
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: "1.25rem", marginBottom: "1.5rem" }}>
-        {/* Participation */}
-        <div style={S.chartCard}>
-          <h4 style={{ fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: "1rem" }}>Participation Rate (last 8)</h4>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 80 }}
-               role="img" aria-label="Participation rate bar chart">
-            {participationData.map((v, i) => (
-              <div key={i} style={{ flex: 1, minWidth: 8, borderRadius: "3px 3px 0 0", background: `linear-gradient(to top,${T.accent},${T.accent2})`, height: `${Math.round((v / maxP) * 76)}px`, transition: "height .4s" }}
-                   title={`P${i + 1}: ${v}%`} aria-label={`Proposal ${i + 1}: ${v}% participation`} />
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 4, marginTop: ".3rem" }}>
-            {participationData.map((_, i) => (
-              <div key={i} style={{ flex: 1, fontSize: ".65rem", color: T.muted, textAlign: "center" }}>P{i + 1}</div>
-            ))}
-          </div>
-        </div>
-
         {/* Outcomes */}
         <div style={S.chartCard}>
           <h4 style={{ fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: "1rem" }}>Outcome Breakdown</h4>
           <div style={{ display: "flex", flexDirection: "column", gap: ".6rem" }}>
-            {(["passed", "failed", "active", "pending"] as ProposalStatus[]).map(s => {
-              const colors: Record<ProposalStatus, string> = { passed: T.accent2, failed: T.danger, active: T.warn, pending: T.muted };
+            {statuses.map(s => {
+              const colors: Record<ProposalStatus, string> = { active: T.warn, pending: T.muted, queued: T.accent, executed: T.accent2, defeated: T.danger, expired: T.danger, cancelled: T.muted, inDiscussion: T.warn, vetoed: T.danger };
               const n = outcomeCounts[s] || 0;
               return (
                 <div key={s} style={{ display: "flex", alignItems: "center", gap: ".75rem", fontSize: ".85rem" }}>
@@ -554,14 +546,15 @@ function Analytics({ proposals }: { proposals: Proposal[] }) {
           </div>
         </div>
 
-        {/* Speed */}
+        {/* Voting period is computed from supplied proposal dates. */}
         <div style={S.chartCard}>
-          <h4 style={{ fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: "1rem" }}>Avg. Decision Speed</h4>
-          {[["Avg. time to quorum", "2.3 days"], ["Avg. voting period", "7 days"], ["Fastest proposal", "18h"], ["Largest turnout", "17.3%"]].map(([l, v]) => (
-            <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: ".875rem", padding: ".4rem 0", borderBottom: `1px solid ${T.border}` }}>
-              <span style={{ color: T.muted }}>{l}</span><strong>{v}</strong>
-            </div>
-          ))}
+          <h4 style={{ fontSize: ".8rem", textTransform: "uppercase", letterSpacing: ".06em", color: T.muted, marginBottom: "1rem" }}>Average Voting Period</h4>
+          {(() => {
+            const durations = proposals.map(p => (Date.parse(p.ends) - Date.parse(p.created)) / 86_400_000).filter(n => Number.isFinite(n) && n >= 0);
+            return durations.length
+              ? <p>{(durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(1)} days</p>
+              : <p>Unavailable without proposal dates.</p>;
+          })()}
         </div>
       </div>
 
@@ -578,9 +571,9 @@ function Analytics({ proposals }: { proposals: Proposal[] }) {
           </thead>
           <tbody>
             {[...proposals].reverse().map(p => {
-              const tot = p.forVotes + p.againstVotes;
+              const tot = p.forVotes + p.againstVotes + (p.abstainVotes ?? 0);
               const fp = tot ? Math.round((p.forVotes / tot) * 100) : 0;
-              const par = tot ? ((tot / 184_000_000) * 100).toFixed(1) + "%" : "—";
+              const par = tot && p.snapshotTotalSupply ? ((tot / p.snapshotTotalSupply) * 100).toFixed(1) + "%" : "—";
               return (
                 <tr key={p.id} style={{ borderBottom: `1px solid ${T.border}` }}>
                   <td style={{ padding: ".5rem .75rem", color: T.muted }}>{p.id}</td>
@@ -774,9 +767,9 @@ function ProposalWizard({ onSubmit, onToast }: {
 type Tab = "proposals" | "create" | "delegate" | "calculator" | "analytics";
 
 export function GovernanceForum({
-  proposals: propProposals = DEFAULT_PROPOSALS,
+  proposals: propProposals = [],
   delegates = DEFAULT_DELEGATES,
-  totalSupply = 184_000_000,
+  totalSupply,
   onProposalSubmit,
   onVote,
   onDelegate,
@@ -854,7 +847,11 @@ export function GovernanceForum({
   ];
 
   const activeStats = proposals.filter(p => p.status === "active").length;
-  const totalVotes = proposals.reduce((a, p) => a + p.forVotes + p.againstVotes, 0);
+  const totalVotes = proposals.reduce((a, p) => a + p.forVotes + p.againstVotes + (p.abstainVotes ?? 0), 0);
+  const quorumBps = proposals.map(p => p.quorumBps).filter((value): value is number => value !== undefined);
+  const averageQuorumPct = quorumBps.length
+    ? `${(quorumBps.reduce((sum, value) => sum + value, 0) / quorumBps.length / 100).toFixed(1)}%`
+    : null;
 
   return (
     <div style={S.root} className={className} aria-label={ariaLabel ?? "Soroban AMM Governance"}>
@@ -892,7 +889,7 @@ export function GovernanceForum({
           {[
             { label: "Active Proposals", val: activeStats, sub: `${proposals.filter(p => p.status === "active" && p.ends <= new Date(Date.now() + 7*86400000).toISOString().slice(0,10)).length} ending this week` },
             { label: "Total Votes Cast",  val: fmtNum(totalVotes), sub: "across all proposals" },
-            { label: "Quorum Threshold",  val: "10%",  sub: "of circulating supply" },
+            ...(averageQuorumPct ? [{ label: "Average Quorum", val: averageQuorumPct, sub: "from proposal snapshots" }] : []),
             { label: "Your Voting Power", val: walletVotingPower ? fmtNum(walletVotingPower) : "—", sub: walletConnected ? "connected" : "Connect wallet to view" },
           ].map(s => (
             <div key={s.label} style={S.statCard}>
@@ -925,7 +922,7 @@ export function GovernanceForum({
               <h1 style={{ fontSize: "1.25rem", fontWeight: 700 }}>Governance Proposals</h1>
               <div style={{ display: "flex", gap: ".5rem", flexWrap: "wrap" }}>
                 {[
-                  { id: "filter-status", value: filterStatus, onChange: setFilterStatus, label: "Filter by status", options: [["", "All Status"], ["active", "Active"], ["passed", "Passed"], ["failed", "Failed"], ["pending", "Pending"]] },
+                  { id: "filter-status", value: filterStatus, onChange: setFilterStatus, label: "Filter by status", options: [["", "All Status"], ["active", "Active"], ["pending", "Pending / Timelock"], ["queued", "Queued"], ["executed", "Executed"], ["defeated", "Defeated"], ["expired", "Expired"], ["cancelled", "Cancelled"], ["inDiscussion", "In Discussion"], ["vetoed", "Vetoed"]] },
                   { id: "filter-cat",    value: filterCat,    onChange: setFilterCat,    label: "Filter by category", options: [["", "All Categories"], ["protocol", "Protocol"], ["treasury", "Treasury"], ["params", "Parameters"]] },
                 ].map(f => (
                   <select key={f.id} id={f.id} value={f.value} onChange={e => f.onChange(e.target.value)}
@@ -937,11 +934,14 @@ export function GovernanceForum({
             </div>
             <div role="list" aria-label="Proposals list">
               {filteredProposals.length === 0 && (
-                <p style={{ color: T.muted, fontSize: ".9rem", padding: "2rem 0" }}>No proposals match the current filters.</p>
+                <p style={{ color: T.muted, fontSize: ".9rem", padding: "2rem 0" }}>
+                  {proposals.length === 0 ? "No proposals yet." : "No proposals match the current filters."}
+                </p>
               )}
               {filteredProposals.map(p => {
                 const myVote = votes[p.id];
-                const hasVotes = p.forVotes + p.againstVotes > 0;
+                const hasVotes = p.forVotes + p.againstVotes + (p.abstainVotes ?? 0) > 0;
+                const quorum = quorumProgress(p);
                 return (
                   <article key={p.id} role="listitem"
                     style={S.proposalCard}
@@ -958,13 +958,18 @@ export function GovernanceForum({
                     </div>
                     <div style={{ fontSize: "1.05rem", fontWeight: 600, marginBottom: ".4rem" }}>{p.title}</div>
                     <div style={{ fontSize: ".875rem", color: T.muted, marginBottom: "1rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" as const, overflow: "hidden" }}>{p.summary}</div>
-                    {hasVotes ? <VoteBar forVotes={p.forVotes} againstVotes={p.againstVotes} /> : (
+                    {hasVotes ? <VoteBar forVotes={p.forVotes} againstVotes={p.againstVotes} abstainVotes={p.abstainVotes} /> : (
                       <div style={{ fontSize: ".8rem", color: T.muted, margin: ".4rem 0" }}>No votes yet</div>
                     )}
+                    {quorum && <div aria-label="Quorum progress" style={{ color: T.muted, fontSize: ".8rem", marginTop: ".4rem" }}>Quorum {quorum.met ? "met" : "not met"}: {fmtNum(quorum.votes)} of {fmtNum(quorum.required)}</div>}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: ".5rem", fontSize: ".8rem", color: T.muted, marginTop: ".8rem" }}>
                       <span>By {p.author} · Created {p.created}</span>
                       <span style={{ color: p.status === "active" ? T.warn : T.muted }}>
-                        {p.status === "active" ? `⏱ Ends ${p.ends}` : p.status === "pending" ? `📅 Opens ${p.ends}` : `✓ Closed ${p.ends}`}
+                        {p.status === "active"
+                          ? `⏱ Ends ${p.ends}`
+                          : p.status === "pending"
+                            ? `⏳ Timelock${p.executeAfter === undefined ? " active" : ` · execute after ledger ${p.executeAfter}`}`
+                            : `✓ Closed ${p.ends}`}
                       </span>
                       {p.status === "active" && (
                         <div style={{ display: "flex", gap: ".5rem" }} onClick={e => e.stopPropagation()}>
